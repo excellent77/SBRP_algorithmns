@@ -21,7 +21,7 @@ from lns_solver import run_lns
 
 # ---------- 參數設定 ----------
 MAX_TOTAL_BUSES = 6
-DW_ITERATIONS = 2000
+DW_ITERATIONS = 200
 
 # ===============================
 # Dantzig-Wolfe Solver
@@ -79,7 +79,7 @@ class DantzigWolfeSolver:
     # Initial columns
     # ===============================
     def initialize_columns(self):
-        """使用啟發式解 (ACO) 初始化路徑池，確保 Master Problem 一開始就是可行的"""
+        """使用啟發式解初始化路徑池，確保 Master Problem 一開始就是可行的"""
         print("[DW] 正在初始化路徑池 (Initial Columns)...")
         # 透過 ACO 取得一個高品質初始解，確保滿足車輛數限制
         init_sol = run_lns(self.schools, self.stations)
@@ -91,26 +91,7 @@ class DantzigWolfeSolver:
         
         for g in self.groups:
             if g['id'] not in covered_groups:
-                self._add_route(self._single_group_route(g))
-
-    def _single_group_route(self, g):
-        """為單一群體建立基礎可行路徑"""
-        events = [
-            ('pickup', (g['st_idx'], {g['sch_idx']: g['count']})),
-            ('drop', g['sch_idx'])
-        ]
-        r = Route(events=events)
-        r.minutes, r.in_vehicle_minutes, r.pickup_detail, r.fairness_penalty = simulate_route(
-            r, self.schools, self.st_dict
-        )
-        return r
-
-    def _get_coord(self, n_type, n_idx):
-        """根據類型獲取座標"""
-        if n_type == 'st':
-            return self.st_dict[n_idx].coord
-        else:
-            return self.schools[n_idx].coord
+                raise ValueError(f"初始路徑池未涵蓋所有群體！缺少群體 ID: {g['id']}")
 
     # ===============================
     # Master Problem (Set Partitioning)
@@ -166,17 +147,15 @@ class DantzigWolfeSolver:
 
         n = len(self.groups)
         best_route = None
-        best_rc = 0.0
-
+        best_rc = 0
         total_pos_dual = sum(max(0, d) for d in self.duals)
 
         # 統計各群體目前在路徑池中被覆蓋的次數 (times)
         coverage_counts = [len(self.group_to_routes[g['id']]) for g in self.groups]
-
         sorted_groups = sorted(
             self.groups,
-            key=lambda g: self.duals[g['id']] / (coverage_counts[g['id']]),
-            reverse=True
+            key=lambda g:coverage_counts[g['id']], #self.duals[g['id']]
+            #reverse=True
         )
 
         school_offset = len(self.st_dict)
@@ -229,7 +208,7 @@ class DantzigWolfeSolver:
         ):
             nonlocal best_route, best_rc
 
-            if len(path)>5 and best_rc < -0.1*total_pos_dual:
+            if best_rc < -0.0001:
                 return
 
             current_rc = (
@@ -264,7 +243,7 @@ class DantzigWolfeSolver:
                         best_rc = current_rc
                         best_route = temp_route
                         return # 找到新的最佳路徑，立即停止 DFS 搜尋
-                return
+                #return
             
 
             if time > MAX_ROUTE_MIN:
@@ -314,7 +293,6 @@ class DantzigWolfeSolver:
                     new_onboard,
                     new_path
                 )
-                break
 
 
             for g in sorted_groups:
@@ -369,7 +347,7 @@ class DantzigWolfeSolver:
             if best_route and best_rc < -1e-4:
                 break
         if best_route:
-            tqdm.write(f"[Pricing] Found route RC={best_rc:.2f}")
+            tqdm.write(f"[Pricing] Found route RC={best_rc:.2f} path_length={len(best_route.events)}")
 
         return best_route
 
