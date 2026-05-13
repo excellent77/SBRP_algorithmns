@@ -1,6 +1,6 @@
 # ignore folder
 __pycache__/
-
+data/
 .vscode/
 
 #ignore data
