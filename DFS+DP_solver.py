@@ -314,7 +314,6 @@ class DantzigWolfeSolver:
                     new_onboard,
                     new_path
                 )
-                break
 
 
             for g in sorted_groups:

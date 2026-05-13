@@ -161,12 +161,13 @@ def repair_greedy(sol: Solution, to_insert: List[int], schools: List[School], st
     return build_solution(current_sol.routes, stations_list)
 
 # ========= LNS 主程式 =========
-def run_lns(schools: List[School], stations: List[Station]) -> Solution:
+def run_lns(schools: List[School], stations: List[Station], print_log:bool=True) -> Solution:
     print("\n[LNS] 正在生成初始解...")
     best_sol = get_initial_solution(schools, stations)
     current_sol = copy.deepcopy(best_sol)
     
-    print(f"[LNS] 初始解成本: {solution_cost(best_sol):.1f}")
+    if print_log:
+        print(f"[LNS] 初始解成本: {solution_cost(best_sol):.1f}")
     
     for it in range(1, LNS_ITERATIONS + 1):
         # 1. 破壞
@@ -186,9 +187,10 @@ def run_lns(schools: List[School], stations: List[Station]) -> Solution:
         if temp_sol.feasible and solution_cost(temp_sol) < solution_cost(best_sol):
             best_sol = copy.deepcopy(temp_sol)
             current_sol = copy.deepcopy(temp_sol)
-            print(f"[Iter {it:03d}] 發現更優解 -> 車輛: {len(best_sol.routes)}, 總乘車時間: {best_sol.total_in_vehicle_minutes:.1f}")
+            if print_log:
+                print(f"[Iter {it:03d}] 發現更優解 -> 車輛: {len(best_sol.routes)}, 總乘車時間: {best_sol.total_in_vehicle_minutes:.1f}")
         
-        if it % 50 == 0:
+        if print_log and it % 50 == 0:
             print(f"[Iter {it:03d}] 搜尋中... 當前最佳成本: {solution_cost(best_sol):.1f}")
 
     return best_sol
