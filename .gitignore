@@ -1,2 +1,7 @@
+# ignore folder
 __pycache__/
+
+.vscode/
+
+#ignore data
 *.pyc
