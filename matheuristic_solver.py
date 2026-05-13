@@ -10,10 +10,10 @@ from utils.solution_utils import(
     print_solution_pretty, plot_routes_on_map, route_cost
 )
 from utils.instance_generator import gen_instance_multi
-from aco_solver import aco_construct_solution
+from lns_solver import run_lns
 
 # ---------- Matheuristic 參數 ----------
-ROUTE_POOL_SIZE = 80000  # 候選路徑池大小
+ROUTE_POOL_SIZE = 80  # 候選路徑池大小
 MAX_TOTAL_BUSES = 6 #公車數量上限
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
@@ -39,18 +39,14 @@ class MatheuristicSolver:
     def generate_route_pool(self):
         """
         啟發式階段：生成大量高品質的可行路徑。
-        這裡結合了隨機化 ACO 構造與隨機排列切割。
+        這裡結合了 LNS 優化後的路徑與隨機排列切割。
         """
         print(f"[Matheuristic] 開始生成候選路徑池... 目標: {ROUTE_POOL_SIZE} 條")
         
-        # 1. 利用 ACO 邏輯生成初步路徑
-        n = 1 + len(self.stations)
-        tau = [[0.5]*n for _ in range(n)]
-        eta = [[1.0]*n for _ in range(n)]
-        
+        # 1. 利用 LNS 邏輯生成高品質路徑
         while len(self.route_pool) < ROUTE_POOL_SIZE:
-            # 構造一個完整解
-            temp_sol = aco_construct_solution(self.schools, self.stations, tau, eta)
+            # 透過 LNS 迭代尋找一個高品質解
+            temp_sol = run_lns(self.schools, self.stations, print_log=False)
             # 提取解中的路徑並存入池中
             for r in temp_sol.routes:
                 # 確保路徑符合時間和容量限制
