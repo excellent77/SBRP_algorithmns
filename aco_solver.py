@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 from collections import defaultdict
-import math, random
+import itertools, math, random
 
 from utils.data_models import School, Station, Route, Solution, Event, Coord
 from utils.geo_utils import travel_minutes, haversine_km
@@ -41,6 +41,28 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
     def any_remaining() -> bool:
         return any(sum(m.values()) > 0 for m in remaining.values())
 
+    def min_finish_time_from(pos: Coord, onboard_by_school: Dict[int, int]) -> float:
+        """回傳從 pos 出發，把車上所有學校送完的最短估計時間。"""
+        return finish_order_from(pos, onboard_by_school)[0]
+
+    def finish_order_from(pos: Coord, onboard_by_school: Dict[int, int]):
+        """回傳從 pos 出發送完車上學生的最短時間與學校順序。"""
+        targets = [k for k, v in onboard_by_school.items() if v > 0]
+        if not targets:
+            return 0.0, ()
+        best = float('inf')
+        best_order = ()
+        for order in itertools.permutations(targets):
+            total = 0.0
+            cur = pos
+            for k in order:
+                total += travel_minutes(cur, schools[k].coord)
+                cur = schools[k].coord
+            if total < best:
+                best = total
+                best_order = order
+        return best, best_order
+
     while students_served < total_students and len(routes) < MAX_TOTAL_BUSES:
         events: List[Event] = []
         cur_coord: Optional[Coord] = None
@@ -79,8 +101,8 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                     best_i = min(candidate_stations, key=lambda i: travel_minutes(cur_coord, stations[i].coord))
                     to_next = travel_minutes(cur_coord, stations[best_i].coord)
                     pos_after = stations[best_i].coord
-                back_min = min(travel_minutes(pos_after, sch.coord) for sch in schools)
-                if minutes_used + to_next + back_min > MAX_ROUTE_MIN:
+                finish_min = min_finish_time_from(pos_after, load_by_school)
+                if minutes_used + to_next + finish_min > MAX_ROUTE_MIN:
                     choose_drop = True
 
             # ---- 先丟客 ----
@@ -150,26 +172,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
             next_coord = stations[pick].coord
             travel = 0.0 if cur_coord is None else travel_minutes(cur_coord, next_coord)
 
-            back_min = min(travel_minutes(next_coord, sch.coord) for sch in schools)
-            if minutes_used + travel + back_min > MAX_ROUTE_MIN:
-                if candidate_schools and cur_coord is not None:
-                    k = min(candidate_schools, key=lambda kk: travel_minutes(cur_coord, schools[kk].coord))
-                    t2 = travel_minutes(cur_coord, schools[k].coord)
-                    if minutes_used + t2 <= MAX_ROUTE_MIN:
-                        events.append(('drop', k))
-                        minutes_used += t2
-                        cur_coord = schools[k].coord
-                        load_total -= load_by_school[k]
-                        load_by_school[k] = 0
-                        made_progress = True
-                        stall = 0
-                        continue
-                candidate_stations.remove(pick)
-                stall += 1
-                if stall >= 5:
-                    break
-                continue
-
             capacity_left = BUS_CAPACITY - load_total
             if capacity_left <= 0:
                 if candidate_schools and cur_coord is not None:
@@ -203,6 +205,30 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                     break
                 continue
 
+            projected_load_by_school = load_by_school.copy()
+            for k, c in take_map.items():
+                projected_load_by_school[k] += c
+
+            finish_min = min_finish_time_from(next_coord, projected_load_by_school)
+            if minutes_used + travel + finish_min > MAX_ROUTE_MIN:
+                if candidate_schools and cur_coord is not None:
+                    k = min(candidate_schools, key=lambda kk: travel_minutes(cur_coord, schools[kk].coord))
+                    t2 = travel_minutes(cur_coord, schools[k].coord)
+                    if minutes_used + t2 <= MAX_ROUTE_MIN:
+                        events.append(('drop', k))
+                        minutes_used += t2
+                        cur_coord = schools[k].coord
+                        load_total -= load_by_school[k]
+                        load_by_school[k] = 0
+                        made_progress = True
+                        stall = 0
+                        continue
+                candidate_stations.remove(pick)
+                stall += 1
+                if stall >= 5:
+                    break
+                continue
+
             events.append(('pickup', (pick, take_map)))
             minutes_used += travel
             cur_coord = next_coord
@@ -216,7 +242,7 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
 
             if load_total >= BUS_CAPACITY:
                 continue
-            if minutes_used + min(travel_minutes(cur_coord, sch.coord) for sch in schools) > MAX_ROUTE_MIN:
+            if minutes_used + min_finish_time_from(cur_coord, load_by_school) > MAX_ROUTE_MIN:
                 continue
 
         # 路線收尾：若還有人在車上，丟到最近學校
@@ -232,8 +258,9 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
             if remaining_onboard:
                 last_pos = (stations[events[-1][1][0]].coord if events[-1][0]=='pickup'
                             else schools[int(events[-1][1])].coord)  # type: ignore
-                nearest = min(remaining_onboard.keys(), key=lambda k: travel_minutes(last_pos, schools[k].coord))
-                events.append(('drop', int(nearest)))
+                _, finish_order = finish_order_from(last_pos, remaining_onboard)
+                for sch_idx in finish_order:
+                    events.append(('drop', int(sch_idx)))
         else:
             break
 

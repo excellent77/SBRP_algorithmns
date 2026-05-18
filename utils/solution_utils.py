@@ -141,7 +141,7 @@ def build_solution(routes: List[Route], stations: List[Station]) -> Solution:
         is_feasible = False
     else:
         for r in routes:
-            load = sum(c for _, _, c, _ in r.pickup_detail)
+            load = route_max_load(r)
             if load > BUS_CAPACITY or r.minutes > MAX_ROUTE_MIN + 1e-6:
                 is_feasible = False
                 break
@@ -163,6 +163,21 @@ def solution_cost(sol: Solution) -> float:
 def route_cost(route:Route) -> float:
     return ROUTE_TIME_WEIGHT*route.in_vehicle_minutes + FAIRNESS_WEIGHT*route.fairness_penalty + TOTAL_TIME_WEIGHT*route.minutes + BUS_COUNT_WEIGHT
 
+def route_max_load(route: Route) -> int:
+    """計算路線任一時刻的最大車上人數。"""
+    onboard_by_school: Dict[int, int] = defaultdict(int)
+    max_load = 0
+    for et, data in route.events:
+        if et == 'pickup':
+            _, take_map = data  # type: ignore
+            for sch_idx, count in take_map.items():
+                onboard_by_school[int(sch_idx)] += count
+        else:
+            sch_idx = int(data)  # type: ignore
+            onboard_by_school[sch_idx] = 0
+        max_load = max(max_load, sum(onboard_by_school.values()))
+    return max_load
+
 # ========= 併車（串接事件序列；再次模擬核對 60 分鐘） =========
 def try_merge_routes(sol: Solution, stations_list: List[Station], schools: List[School], auto_fill:bool=False) -> Solution:
     stations = {s.idx:s for s in stations_list}
@@ -177,7 +192,8 @@ def try_merge_routes(sol: Solution, stations_list: List[Station], schools: List[
                 events = r1.events + r2.events
                 r_tmp = Route(events=events)
                 minutes, ivm, detail, fairness = simulate_route(r_tmp, schools, stations, auto_fill=auto_fill)
-                if minutes <= MAX_ROUTE_MIN + 1e-6:
+                load = route_max_load(r_tmp)
+                if minutes <= MAX_ROUTE_MIN + 1e-6 and load <= BUS_CAPACITY:
                     r_tmp.minutes, r_tmp.in_vehicle_minutes, r_tmp.pickup_detail, r_tmp.fairness_penalty = minutes, ivm, detail, fairness
                     keep = [k for k in range(n) if k not in (i,j)]
                     routes = [routes[k] for k in keep] + [r_tmp]

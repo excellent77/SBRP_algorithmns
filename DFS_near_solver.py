@@ -57,6 +57,51 @@ class DantzigWolfeSolver:
         self.mu = 0.0
         self.alpha = 0.7  # dual stabilization
         self.best_feasible_sol = None
+        self._prepare_pricing_cache()
+
+    def _prepare_pricing_cache(self):
+        """Precompute static graph and group data used by every pricing DFS."""
+        self.n_groups = len(self.groups)
+        self.school_offset = len(self.st_dict)
+        self.station_nodes = {st_idx: i for i, st_idx in enumerate(self.st_dict)}
+        self.school_nodes = {
+            sch_idx: self.school_offset + sch_idx
+            for sch_idx in range(len(self.schools))
+        }
+        total_nodes = self.school_offset + len(self.schools)
+
+        coords = [None] * total_nodes
+        for st_idx, node in self.station_nodes.items():
+            coords[node] = self.st_dict[st_idx].coord
+        for sch_idx, node in self.school_nodes.items():
+            coords[node] = self.schools[sch_idx].coord
+
+        self.dist_matrix = [[0.0] * total_nodes for _ in range(total_nodes)]
+        for i in range(total_nodes):
+            for j in range(total_nodes):
+                if i != j:
+                    self.dist_matrix[i][j] = travel_minutes(coords[i], coords[j])
+
+        self.group_station_node = [0] * self.n_groups
+        self.group_school_node = [0] * self.n_groups
+        self.group_school_idx = [0] * self.n_groups
+        self.group_count = [0] * self.n_groups
+        self.group_direct_school_dist = [0.0] * self.n_groups
+        self.school_group_masks = [0] * len(self.schools)
+        self.school_group_loads = [0] * len(self.schools)
+
+        for g in self.groups:
+            gid = g['id']
+            sch_idx = g['sch_idx']
+            st_node = self.station_nodes[g['st_idx']]
+            sch_node = self.school_nodes[sch_idx]
+            self.group_station_node[gid] = st_node
+            self.group_school_node[gid] = sch_node
+            self.group_school_idx[gid] = sch_idx
+            self.group_count[gid] = g['count']
+            self.group_direct_school_dist[gid] = self.dist_matrix[st_node][sch_node]
+            self.school_group_masks[sch_idx] |= 1 << gid
+            self.school_group_loads[sch_idx] += g['count']
 
     # ===============================
     # Route Pool Management
@@ -149,7 +194,7 @@ class DantzigWolfeSolver:
     # ===============================
     def pricing(self):
 
-        n = len(self.groups)
+        n = self.n_groups
         best_route = None
         best_rc = 0
         total_pos_dual = sum(max(0, d) for d in self.duals)
@@ -158,49 +203,19 @@ class DantzigWolfeSolver:
         coverage_counts = [len(self.group_to_routes[g['id']]) for g in self.groups]
         sorted_groups = sorted(
             self.groups,
-            key=lambda g:coverage_counts[g['id']], #self.duals[g['id']]
-            #reverse=True
+            key=lambda g: (coverage_counts[g['id']], -self.duals[g['id']])
         )
+        sorted_gids = [g['id'] for g in sorted_groups]
+        dist_matrix = self.dist_matrix
+        group_direct_school_dist = self.group_direct_school_dist
 
-        school_offset = len(self.st_dict)
-        station_nodes = {}
-        school_nodes = {}
-
-        for i, st_idx in enumerate(self.st_dict):
-            station_nodes[st_idx] = i
-        for i, sch in enumerate(self.schools):
-            school_nodes[i] = school_offset + i
-
-        total_nodes = school_offset + len(self.schools)
-
-        # =========================
-        # Distance Matrix
-        # =========================
-
-        coords = [None] * total_nodes
-        for st_idx, nid in station_nodes.items():
-            coords[nid] = self.st_dict[st_idx].coord
-        for sch_idx, nid in school_nodes.items():
-            coords[nid] = self.schools[sch_idx].coord
-
-        dist_matrix = [
-            [0.0] * total_nodes
-            for _ in range(total_nodes)
-        ]
-
-        for i in range(total_nodes):
-            for j in range(total_nodes):
-                if i != j:
-                    dist_matrix[i][j] = travel_minutes(
-                        coords[i],
-                        coords[j]
-                    )
         # =========================
         # DFS + DP
         # =========================
         memo = {}
         def dfs(
             curr_node,
+            current_gid,
             time,
             ivm_acc,
             load,
@@ -231,6 +246,7 @@ class DantzigWolfeSolver:
 
             state = (
                 curr_node,
+                current_gid,
                 visited_mask,
                 onboard_mask,
                 load
@@ -257,39 +273,41 @@ class DantzigWolfeSolver:
             if load > BUS_CAPACITY:
                 return
 
-            for gid in range(n):
-                if not (onboard_mask & (1 << gid)):
+            tried_schools = 0
+            mask = onboard_mask
+            while mask:
+                lowbit = mask & -mask
+                gid = lowbit.bit_length() - 1
+                mask ^= lowbit
+                sch_idx = self.group_school_idx[gid]
+                sch_bit = 1 << sch_idx
+                if tried_schools & sch_bit:
                     continue
-                g = self.groups[gid]
-                sch_idx = g['sch_idx']
-                # all groups to same school
-                dropping = []
-                for gid2 in range(n):
-                    if onboard_mask & (1 << gid2):
-                        if self.groups[gid2]['sch_idx'] == sch_idx:
-                            dropping.append(gid2)
+                tried_schools |= sch_bit
 
-                sch_node = school_nodes[sch_idx]
+                dropping_mask = onboard_mask & self.school_group_masks[sch_idx]
+                sch_node = self.school_nodes[sch_idx]
                 dist = dist_matrix[curr_node][sch_node]
                 new_time = time + dist
 
                 if new_time > MAX_ROUTE_MIN:
                     continue
 
-                dropped_load = sum(
-                    self.groups[x]['count']
-                    for x in dropping
-                )
+                dropped_load = 0
+                drop_iter = dropping_mask
+                while drop_iter:
+                    lowbit = drop_iter & -drop_iter
+                    dropped_load += self.group_count[lowbit.bit_length() - 1]
+                    drop_iter ^= lowbit
 
-                new_onboard = onboard_mask
-                for x in dropping:
-                    new_onboard &= ~(1 << x)
+                new_onboard = onboard_mask & ~dropping_mask
 
                 new_ivm = ivm_acc + load * dist
                 new_path = path + [('s', sch_idx)]
 
                 dfs(
                     sch_node,
+                    current_gid,
                     new_time,
                     new_ivm,
                     load - dropped_load,
@@ -302,14 +320,15 @@ class DantzigWolfeSolver:
 
 
             pickup_branches = 0
-            for g in sorted_groups:
-                gid = g['id']
+            for gid in sorted_gids:
                 if visited_mask & (1 << gid):
                     continue
-                if load + g['count'] > BUS_CAPACITY:
+                if group_direct_school_dist[gid] >= group_direct_school_dist[current_gid]:
+                    continue
+                if load + self.group_count[gid] > BUS_CAPACITY:
                     continue
 
-                st_node = station_nodes[g['st_idx']]
+                st_node = self.group_station_node[gid]
                 dist = dist_matrix[curr_node][st_node]
                 new_time = time + dist
 
@@ -323,9 +342,10 @@ class DantzigWolfeSolver:
 
                 dfs(
                     st_node,
+                    gid,
                     new_time,
                     new_ivm,
-                    load + g['count'],
+                    load + self.group_count[gid],
                     dual_acc + self.duals[gid],
                     fairness_acc,
                     new_visited,
@@ -340,14 +360,14 @@ class DantzigWolfeSolver:
         # Start DFS
         # =========================
 
-        for g in sorted_groups[:MAX_PRICING_STARTS]:
-            gid = g['id']
-            st_node = station_nodes[g['st_idx']]
+        for gid in sorted_gids[:MAX_PRICING_STARTS]:
+            st_node = self.group_station_node[gid]
             dfs(
                 st_node,
+                gid,
                 0.0,
                 0.0,
-                g['count'],
+                self.group_count[gid],
                 self.duals[gid],
                 0.0,
                 (1 << gid),
@@ -430,4 +450,4 @@ if __name__ == "__main__":
     print_solution_pretty(best_sol, stations, schools)
     m = plot_routes_on_map(best_sol, stations, schools, title="Dantzig-Wolfe Optimized")
     os.makedirs("./data", exist_ok=True)
-    m.save("./data/dfs_dp_routes.html")
+    m.save("./data/dfs_near_routes.html")

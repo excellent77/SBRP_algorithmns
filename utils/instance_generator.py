@@ -5,7 +5,7 @@ from utils.geo_utils import haversine_km, jitter_coord
 
 
 
-NUM_SCHOOLS = 1            # 學校
+NUM_SCHOOLS = 2            # 學校
 NUM_STATIONS = 30          # 站點數
 TOTAL_STUDENTS = 100       # 需求總人數
 NUM_SECTORS = 6            # 用於站點散佈（不強制限制在單一扇形）

@@ -2,7 +2,7 @@ from typing import List, Tuple, Optional
 import random, copy
 
 from utils.data_models import School, Station, Route, Solution
-from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes, print_solution_pretty, plot_routes_on_map
+from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes, route_max_load, print_solution_pretty, plot_routes_on_map
 from aco_solver import aco_construct_solution
 from utils.instance_generator import gen_instance_multi
 
@@ -11,9 +11,44 @@ BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
 MAX_TOTAL_BUSES = 6        # 總派車上限
 LNS_ITERATIONS = 300    # LNS 迭代次數
-DESTROY_DEGREE = 0.5   # 每次破壞% 的站點
+DESTROY_DEGREE = 0.5   # 每次破壞%的站點
 SHOW_MAP = True
 
+
+def rebuild_solution(routes: List[Route], stations_list: List[Station], schools: List[School]) -> Solution:
+    """重新模擬路線，確保 minutes/load/pickup_detail 都是最新狀態。"""
+    st_dict = {s.idx: s for s in stations_list}
+    rebuilt_routes = []
+    for r in routes:
+        if not any(ev[0] == 'pickup' for ev in r.events):
+            continue
+        rebuilt = Route(events=list(r.events))
+        rebuilt.minutes, rebuilt.in_vehicle_minutes, rebuilt.pickup_detail, rebuilt.fairness_penalty = simulate_route(
+            rebuilt, schools, st_dict, auto_fill=True
+        )
+        rebuilt_routes.append(rebuilt)
+    return build_solution(rebuilt_routes, stations_list)
+
+
+def relaxed_cost(sol: Solution, stations_list: List[Station]) -> float:
+    """給中間解使用的成本；即使暫時未覆蓋全部需求，也會懲罰違規。"""
+    total_demand = sum(sum(s.demands.values()) for s in stations_list)
+    missing = max(0, total_demand - sol.students_served)
+    cap_over = 0
+    time_over = 0.0
+    for r in sol.routes:
+        load = route_max_load(r)
+        cap_over += max(0, load - BUS_CAPACITY)
+        time_over += max(0.0, r.minutes - MAX_ROUTE_MIN)
+    return (
+        sol.total_in_vehicle_minutes
+        + sol.total_minutes * 10
+        + sol.fairness_penalty * 100
+        + len(sol.routes) * 1000
+        + missing * 100000
+        + cap_over * 100000
+        + time_over * 100000
+    )
 
 
 # ========= [LNS 核心] 初始解生成：簡單貪婪法 =========
@@ -24,7 +59,7 @@ def get_initial_solution(schools: List[School], stations: List[Station]) -> Solu
     dummy_tau = [[1.0]*n for _ in range(n)]
     dummy_eta = [[1.0]*n for _ in range(n)]
     sol = aco_construct_solution(schools, stations, dummy_tau, dummy_eta)
-    return try_merge_routes(sol, stations, schools)
+    return try_merge_routes(sol, stations, schools, auto_fill=True)
 
 # ========= [LNS 核心] 破壞算子：隨機移除站點 =========
 def destroy_random(sol: Solution, degree: float) -> Tuple[Solution, List[int]]:
@@ -91,7 +126,7 @@ def destroy_routes(sol: Solution, num_to_remove: int = 1) -> Tuple[Solution, Lis
 def repair_greedy(sol: Solution, to_insert: List[int], schools: List[School], stations_list: List[Station]) -> Solution:
     """將被移除的站點重新插回最合適的路徑中"""
     st_dict = {s.idx: s for s in stations_list}
-    current_sol = copy.deepcopy(sol)
+    current_sol = rebuild_solution(copy.deepcopy(sol).routes, stations_list, schools)
     
     random.shuffle(to_insert) # 增加隨機性
     
@@ -110,7 +145,7 @@ def repair_greedy(sol: Solution, to_insert: List[int], schools: List[School], st
                 test_route = Route(events=test_events)
                 
                 mins, ivm, detail, fairness = simulate_route(test_route, schools, st_dict, auto_fill=True)
-                load = sum(c for _, _, c, _ in detail)
+                load = route_max_load(test_route)
                 
                 if mins <= MAX_ROUTE_MIN and load <= BUS_CAPACITY:
                     # 建立臨時 Solution 來計算完整成本（包含 BUS_WEIGHT, FAIRNESS_WEIGHT）
@@ -119,11 +154,9 @@ def repair_greedy(sol: Solution, to_insert: List[int], schools: List[School], st
                                           pickup_detail=detail, fairness_penalty=fairness)
                     temp_routes[route_idx] = updated_route
 
-                    # 使用 build_solution 自動彙整指標，並強制設為 feasible 以便進行中間步驟的成本比較
                     temp_sol_candidate = build_solution(temp_routes, stations_list)
-                    temp_sol_candidate.feasible = True
 
-                    candidate_cost = solution_cost(temp_sol_candidate)
+                    candidate_cost = relaxed_cost(temp_sol_candidate, stations_list)
                     if candidate_cost < min_total_cost:
                         min_total_cost = candidate_cost
                         best_candidate = temp_sol_candidate
@@ -140,15 +173,13 @@ def repair_greedy(sol: Solution, to_insert: List[int], schools: List[School], st
             new_r = Route(events=new_route_events)
             new_r.minutes, new_r.in_vehicle_minutes, new_r.pickup_detail, new_r.fairness_penalty = simulate_route(new_r, schools, st_dict, auto_fill=True)
             
-            new_route_load = sum(c for _,_,c,_ in new_r.pickup_detail)
+            new_route_load = route_max_load(new_r)
             if new_r.minutes <= MAX_ROUTE_MIN and new_route_load <= BUS_CAPACITY:
                 temp_routes.append(new_r)
 
-                # 使用 build_solution 自動彙整指標，並強制設為 feasible 以便進行中間步驟的成本比較
                 temp_sol_candidate = build_solution(temp_routes, stations_list)
-                temp_sol_candidate.feasible = True
 
-                candidate_cost = solution_cost(temp_sol_candidate)
+                candidate_cost = relaxed_cost(temp_sol_candidate, stations_list)
                 if candidate_cost < min_total_cost:
                     min_total_cost = candidate_cost
                     best_candidate = temp_sol_candidate

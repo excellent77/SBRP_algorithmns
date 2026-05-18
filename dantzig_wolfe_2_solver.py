@@ -5,18 +5,18 @@ import collections
 import gurobipy as gp
 from gurobipy import GRB
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 
-# --- 專案工具導入 ---
 from utils.data_models import School, Station, Route as ProjectRoute, Solution
 from utils.solution_utils import (
     simulate_route,
     print_solution_pretty, plot_routes_on_map,
     BUS_COUNT_WEIGHT, TOTAL_TIME_WEIGHT, ROUTE_TIME_WEIGHT, FAIRNESS_WEIGHT,
-    MAX_ROUTE_MIN, BUS_CAPACITY
+    MAX_ROUTE_MIN, BUS_CAPACITY, MAX_TOTAL_BUSES, route_cost
 )
 from utils.instance_generator import gen_instance_multi
 from utils.geo_utils import travel_minutes
+from lns_solver import run_lns
 
 # --- 1. 資料結構定義 (Section 2) ---
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class Segment:
     picked: list[Group]
     time: float
     load: int
+    first_group_dist: Optional[float] = None
+    last_group_dist: Optional[float] = None
 
 @dataclass
 class InternalRoute:
@@ -42,25 +44,53 @@ class InternalRoute:
     cost: float
     travel_time: float
     groups_covered: set = field(default_factory=set)
+    project_route: Optional[ProjectRoute] = None
 
 # --- 2. 距離與參數設定 (範例) ---
 # 實務上應從外部資料讀取
 T_max = MAX_ROUTE_MIN
 vehicle_caps = {"bus": BUS_CAPACITY}
+MAX_SEGMENTS_PER_ENUM = 4000
+MAX_SEGMENT_PICKUP_BRANCHES = 10
+MAX_COMPOSITION_PAIRS = 120000
 
 # --- 3. Bounded-Length Segment Enumeration (Section 3) ---
 def enumerate_segments(start, end, candidate_stops, eligible_groups, capacity, dist_matrix):
     results = []
     path = [start]
     picked = []
+    group_target_dist = {
+        g: dist_matrix[g.origin][g.school]
+        for stop_groups in eligible_groups.values()
+        for g in stop_groups
+    }
 
-    def dfs(curr, time_acc, load_acc, remaining_stops):
+    def dfs(curr, time_acc, load_acc, remaining_stops, first_group_dist, current_group_dist):
+        if len(results) >= MAX_SEGMENTS_PER_ENUM:
+            return
+
         # 終止條件：嘗試走向終點
         total_time = time_acc + dist_matrix[curr][end]
         if total_time <= T_max and picked:
-            results.append(Segment(list(path + [end]), list(picked), total_time, load_acc))
+            results.append(
+                Segment(
+                    list(path + [end]),
+                    list(picked),
+                    total_time,
+                    load_acc,
+                    first_group_dist,
+                    current_group_dist
+                )
+            )
+            if len(results) >= MAX_SEGMENTS_PER_ENUM:
+                return
 
-        for stop in list(remaining_stops):
+        branch_count = 0
+        ordered_stops = sorted(
+            remaining_stops,
+            key=lambda stop: dist_matrix[curr][stop] + dist_matrix[stop][end]
+        )
+        for stop in ordered_stops:
             d_ij = dist_matrix[curr][stop]
             if time_acc + d_ij + dist_matrix[stop][end] > T_max:
                 continue
@@ -69,22 +99,50 @@ def enumerate_segments(start, end, candidate_stops, eligible_groups, capacity, d
             # 枚舉該站點的所有 Group 子集組合 (Section 3.3)
             for r in range(1, len(groups_at_stop) + 1):
                 for subset in itertools.combinations(groups_at_stop, r):
+                    subset_dists = [group_target_dist[g] for g in subset]
+                    if (
+                        current_group_dist is not None
+                        and any(d >= current_group_dist for d in subset_dists)
+                    ):
+                        continue
+
                     sub_demand = sum(g.demand for g in subset)
                     if load_acc + sub_demand > capacity:
                         continue
+
+                    new_current_group_dist = min(subset_dists)
+                    new_first_group_dist = (
+                        first_group_dist
+                        if first_group_dist is not None
+                        else new_current_group_dist
+                    )
                     
                     # Backtracking
                     path.append(stop)
                     picked.extend(subset)
                     remaining_stops.remove(stop)
                     
-                    dfs(stop, time_acc + d_ij, load_acc + sub_demand, remaining_stops)
+                    dfs(
+                        stop,
+                        time_acc + d_ij,
+                        load_acc + sub_demand,
+                        remaining_stops,
+                        new_first_group_dist,
+                        new_current_group_dist
+                    )
                     
                     remaining_stops.add(stop)
                     for _ in subset: picked.pop()
                     path.pop()
 
-    dfs(start, 0, 0, set(candidate_stops))
+                    branch_count += 1
+                    if (
+                        len(results) >= MAX_SEGMENTS_PER_ENUM
+                        or branch_count >= MAX_SEGMENT_PICKUP_BRANCHES
+                    ):
+                        return
+
+    dfs(start, 0, 0, set(candidate_stops), None, None)
     return results
 
 # --- 4. Cost 與 Fairness 計算 (Section 6) ---
@@ -116,34 +174,105 @@ def compute_route_cost(nodes, picked, dist_matrix):
 def solve_sbrp(groups: List[Group], stops: List[str], dist_matrix: Dict, 
                school_map: Dict[str, int], schools: List[School], stations: List[Station]):
     route_pool = []
+    route_pool_keys = set()
     st_dict = {s.idx: s for s in stations}
+    group_by_station_school = {
+        (int(g.origin), school_map[g.school]): g
+        for g in groups
+    }
+
+    def add_internal_route(route: InternalRoute) -> bool:
+        key = frozenset(route.groups_covered)
+        if not key or key in route_pool_keys:
+            return False
+        route_pool.append(route)
+        route_pool_keys.add(key)
+        return True
+
+    def add_segment_route(route_type: str, v_type: str, segment: Segment):
+        cost, t_time = compute_route_cost(segment.nodes, segment.picked, dist_matrix)
+        add_internal_route(
+            InternalRoute(
+                route_type,
+                v_type,
+                segment.nodes,
+                segment.picked,
+                cost,
+                t_time,
+                {g.id for g in segment.picked}
+            )
+        )
+
+    def add_project_route(route_type: str, route: ProjectRoute):
+        covered = set()
+        for st_idx, sch_idx, _, _ in route.pickup_detail:
+            g = group_by_station_school.get((st_idx, sch_idx))
+            if g is not None:
+                covered.add(g.id)
+        add_internal_route(
+            InternalRoute(
+                route_type,
+                "bus",
+                [],
+                [],
+                route_cost(route),
+                route.minutes,
+                covered,
+                route
+            )
+        )
+
+    # 先加入一組完整啟發式解，讓 set-partitioning master 至少有可行欄位。
+    # 原本純枚舉池可能漏掉大量 group，導致 cover_g == 1 無解。
+    lns_sol = run_lns(schools, stations, print_log=False)
+    if lns_sol.feasible and len(lns_sol.routes) <= MAX_TOTAL_BUSES:
+        for route in lns_sol.routes:
+            add_project_route("lns", route)
     
     for v_type, v_cap in vehicle_caps.items():
         # Type (a) & (b): 單校枚舉
         groups_a = {s: [g for g in groups if g.origin == s and g.school == 'A'] for s in stops}
         seg_a = enumerate_segments('0', 'A', stops, groups_a, v_cap, dist_matrix)
         for s in seg_a:
-            cost, t_time = compute_route_cost(s.nodes, s.picked, dist_matrix)
-            route_pool.append(InternalRoute('a', v_type, s.nodes, s.picked, cost, t_time, {g.id for g in s.picked}))
+            add_segment_route('a', v_type, s)
+
+        groups_b = {s: [g for g in groups if g.origin == s and g.school == 'B'] for s in stops}
+        seg_b = enumerate_segments('0', 'B', stops, groups_b, v_cap, dist_matrix)
+        for s in seg_b:
+            add_segment_route('b', v_type, s)
 
         # Type (c) Composition: 0 -> VP_B -> B -> VP_A -> A
-        groups_b = {s: [g for g in groups if g.origin == s and g.school == 'B'] for s in stops}
         seg_0_B = enumerate_segments('0', 'B', stops, groups_b, v_cap, dist_matrix)
         seg_B_A = enumerate_segments('B', 'A', stops, groups_a, v_cap, dist_matrix)
         
+        composition_pairs_checked = 0
         for s1 in seg_0_B:
             for s2 in seg_B_A:
+                composition_pairs_checked += 1
+                if composition_pairs_checked > MAX_COMPOSITION_PAIRS:
+                    break
                 # 拼接檢查 (Section 5.3)
                 if set(s1.nodes[1:-1]) & set(s2.nodes[1:-1]): continue
                 if set(s1.picked) & set(s2.picked): continue
+                if (
+                    s1.last_group_dist is not None
+                    and s2.first_group_dist is not None
+                    and s2.first_group_dist >= s1.last_group_dist
+                ): continue
                 if s1.time + s2.time > T_max: continue
-                # 載重檢查：載著 B 校生去接 A 校生
-                if s1.load + s2.load > v_cap: continue # 簡化版，精確應考慮 B 點卸客
+                # s1 的 B 校學生已在 B 下車，s2 才接 A 校學生；兩段載重不會重疊。
+                if max(s1.load, s2.load) > v_cap: continue
                 
                 full_nodes = s1.nodes + s2.nodes[1:]
                 full_picked = s1.picked + s2.picked
                 cost, t_time = compute_route_cost(full_nodes, full_picked, dist_matrix)
-                route_pool.append(InternalRoute('c', v_type, full_nodes, full_picked, cost, t_time, {g.id for g in full_picked}))
+                add_internal_route(InternalRoute('c', v_type, full_nodes, full_picked, cost, t_time, {g.id for g in full_picked}))
+            if composition_pairs_checked > MAX_COMPOSITION_PAIRS:
+                break
+
+    uncovered = [g.id for g in groups if not any(g.id in r.groups_covered for r in route_pool)]
+    if uncovered:
+        print(f"[DW2] 警告：route pool 仍有 {len(uncovered)} 個 group 未覆蓋，前幾個: {uncovered[:10]}")
 
     # --- 6. Gurobi IP Master (Section 7) ---
     model = gp.Model("SBRP_Master")
@@ -159,8 +288,8 @@ def solve_sbrp(groups: List[Group], stops: List[str], dist_matrix: Dict,
             name=f"cover_{g.id}"
         )
     
-    # Constr 2: 車輛數限制 (假設總共 10 台車)
-    model.addConstr(gp.quicksum(x[r] for r in range(len(route_pool))) <= 10, name="vehicle_limit")
+    # Constr 2: 車輛數限制
+    model.addConstr(gp.quicksum(x[r] for r in range(len(route_pool))) <= MAX_TOTAL_BUSES, name="vehicle_limit")
     
     model.optimize()
     
@@ -169,6 +298,10 @@ def solve_sbrp(groups: List[Group], stops: List[str], dist_matrix: Dict,
         
         final_routes = []
         for ir in selected_internal:
+            if ir.project_route is not None:
+                final_routes.append(ir.project_route)
+                continue
+
             events = []
             # 將 InternalRoute 轉換為 ProjectRoute 的事件序列
             for node in ir.nodes[1:]: # 跳過虛擬起點 '0'

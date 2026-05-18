@@ -21,7 +21,10 @@ from lns_solver import run_lns
 
 # ---------- 參數設定 ----------
 MAX_TOTAL_BUSES = 6
-DW_ITERATIONS = 2000
+DW_ITERATIONS = 200
+MAX_PRICING_STARTS = 18
+MAX_PICKUP_BRANCHES = 10
+MAX_ROUTE_EVENTS = 14
 
 # ===============================
 # Dantzig-Wolfe Solver
@@ -236,6 +239,8 @@ class DantzigWolfeSolver:
             nonlocal best_route, best_rc
             if best_rc < -0.0001:#*total_pos_dual:
                 return
+            if len(path) > MAX_ROUTE_EVENTS:
+                return
 
             # 1. 計算當前 Reduced Cost 並剪枝
             # RC = (Bus固定成本 + 時間成本 + 乘車時間成本 + 公平性成本) - (Dual和 + Mu)
@@ -320,6 +325,7 @@ class DantzigWolfeSolver:
                 path.pop()
 
             # 4. 擴展：撿起群體 (Pickup)
+            pickup_branches = 0
             for g in sorted_groups:
                 if visited_groups[g['id']]: continue
                 
@@ -347,8 +353,12 @@ class DantzigWolfeSolver:
                 visited_groups[g['id']] = False
                 path.pop()
 
+                pickup_branches += 1
+                if pickup_branches >= MAX_PICKUP_BRANCHES:
+                    break
+
         # Pricing 起點：自由從各站點出發。
-        for g in sorted_groups:
+        for g in sorted_groups[:MAX_PRICING_STARTS]:
             st_coord = self.st_dict[g['st_idx']].coord
             # Push Buffer (起始群體)
             path.append(('g', g['id']))

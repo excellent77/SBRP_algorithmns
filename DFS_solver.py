@@ -15,7 +15,7 @@ from utils.geo_utils import travel_minutes
 
 # ---------- 參數設定 ----------
 MAX_TOTAL_BUSES = 6
-ROUTE_POOL_SIZE = 80000
+ROUTE_POOL_SIZE = 12000
 
 # ===============================
 # Dantzig-Wolfe Solver
@@ -29,17 +29,36 @@ class DantzigWolfeSolver:
         
         # 定義群 (Group): 同一站點且同目的地學校的學生
         self.groups = []
+        self.group_map = {}
         for st in stations:
             for sch_idx, count in st.demands.items():
+                gid = len(self.groups)
                 self.groups.append({
-                    'id': len(self.groups),
+                    'id': gid,
                     'st_idx': st.idx,
                     'sch_idx': sch_idx,
                     'count': count
                 })
+                self.group_map[(st.idx, sch_idx)] = gid
 
         self.routes = []
+        self.route_pool_keys = set()
+        self.group_to_routes = [[] for _ in range(len(self.groups))]
         self.best_feasible_sol = None
+
+    def _add_route(self, r: Route) -> bool:
+        g_ids = self._groups_in_route(r)
+        g_set = frozenset(g_ids)
+        if not g_set or g_set in self.route_pool_keys:
+            return False
+
+        route_idx = len(self.routes)
+        r._g_ids = g_set
+        self.routes.append(r)
+        self.route_pool_keys.add(g_set)
+        for g_id in g_ids:
+            self.group_to_routes[g_id].append(route_idx)
+        return True
 
     def _single_group_route(self, g):
         """為單一群體建立基礎可行路徑"""
@@ -78,7 +97,7 @@ class DantzigWolfeSolver:
 
         constrs = {}
         for g_idx in range(len(self.groups)):
-            idxs = [i for i, r in enumerate(self.routes) if g_idx in self._groups_in_route(r)]
+            idxs = self.group_to_routes[g_idx]
             # 改為 Set Covering 約束，增加可行性
             constrs[g_idx] = m.addConstr(gp.quicksum(self.x[i] for i in idxs)== 1, name=f"Cover_G{g_idx}")
 
@@ -89,13 +108,9 @@ class DantzigWolfeSolver:
 
     def _groups_in_route(self, r: Route) -> List[int]:
         """回傳此路徑包含的群體 ID 列表"""
-        served = []
-        # 透過 pickup_detail (st, sch, count, ride) 匹配 group
-        for st_idx, sch_idx, count, _ in r.pickup_detail:
-            for g in self.groups:
-                if g['st_idx'] == st_idx and g['sch_idx'] == sch_idx:
-                    served.append(g['id'])
-        return served
+        if hasattr(r, '_g_ids'):
+            return list(r._g_ids)
+        return [self.group_map[(st_idx, sch_idx)] for st_idx, sch_idx, _, _ in r.pickup_detail]
 
     # ===============================
     # Route Pool Generation (Matheuristic)
@@ -106,7 +121,7 @@ class DantzigWolfeSolver:
         
         # 1. 基礎保險：每個群組的直達路徑
         for g in self.groups:
-            self.routes.append(self._single_group_route(g))
+            self._add_route(self._single_group_route(g))
             
         n = len(self.groups)
         station_nodes = {st.idx: i for i, st in enumerate(self.stations)}
@@ -116,18 +131,15 @@ class DantzigWolfeSolver:
         coords = [s.coord for s in self.stations] + [s.coord for s in self.schools]
         dist_matrix = [[travel_minutes(coords[i], coords[j]) if i != j else 0.0 for j in range(total_nodes)] for i in range(total_nodes)]
         
-        seen_g_sets = {frozenset([g['id']]) for g in self.groups}
-
         def dfs(curr_node, time, ivm_acc, load, visited_mask, onboard_mask, path):
             if len(self.routes) >= target_size: return
 
             if onboard_mask == 0 and path:
                 g_set = frozenset(gid for t, gid in path if t == 'g')
-                if g_set not in seen_g_sets:
+                if g_set not in self.route_pool_keys:
                     route = self._build_route(path)
                     if route.minutes <= MAX_ROUTE_MIN:
-                        self.routes.append(route)
-                        seen_g_sets.add(g_set)
+                        self._add_route(route)
                 return
 
             if time > MAX_ROUTE_MIN or load > BUS_CAPACITY or len(path) > 12:
