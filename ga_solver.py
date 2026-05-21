@@ -3,9 +3,9 @@ import copy
 from tqdm import tqdm
 from typing import List
 from utils.data_models import School, Station, Route, Solution
-from utils.solution_utils import simulate_route, route_cost, solution_cost, build_solution, try_merge_routes, print_solution_pretty, plot_routes_on_map
+from utils.solution_utils import simulate_route, solution_cost, build_solution, print_solution_pretty
 from utils.geo_utils import travel_minutes
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 
 # ---------- GA 參數區 ----------
 POP_SIZE = 1000           # 種群大小
@@ -285,7 +285,12 @@ def run_ga(schools: List[School], stations: List[Station]) -> Solution:
 if __name__ == "__main__":
     # 測試執行區塊
     random.seed(42)
-    schools, stations = gen_instance_multi()
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_8.csv", time_csv="./data/time-b_8.csv")
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV")
+    else:
+        schools, stations = gen_instance_multi()
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 執行 GA 演算法
@@ -294,10 +299,3 @@ if __name__ == "__main__":
     # 輸出結果
     print_solution_pretty(best_ga_solution, stations, schools)
     
-    # 生成地圖
-    m = plot_routes_on_map(best_ga_solution, stations, schools, title="GA Optimized")
-    output_path = "./data/ga_routes.html"
-    import os
-    os.makedirs("./data", exist_ok=True)
-    m.save(output_path)
-    print(f"已輸出地圖：{output_path}")

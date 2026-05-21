@@ -9,16 +9,15 @@ Coord = Tuple[float, float]
 
 
 # ========= 幾何/時間 =========
-def haversine_km(a: Coord, b: Coord) -> float:
-    R = 6371.0
-    lat1, lon1 = math.radians(a[0]), math.radians(a[1])
-    lat2, lon2 = math.radians(b[0]), math.radians(b[1])
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    h = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
-    return 2 * R * math.asin(math.sqrt(h))
 
 def travel_minutes(a: Coord, b: Coord) -> float:
-    return haversine_km(a, b) / SPEED_KMH * 60.0 * TRAFFIC_FACTOR
+    # 嚴格使用 time matrix（必須提供 time CSV）；不再回退到座標估算
+    from utils.time_registry import get_time_by_coord, has_time
+    if has_time():
+        t = get_time_by_coord(a, b)
+        if t is not None:
+            return float(t)
+    raise RuntimeError("Time matrix 未註冊或找不到對應座標，請提供 time-b_7.csv 並透過 instance loader 載入")
 
 def jitter_coord(c: Coord, d_km: float) -> Coord:
     r = d_km * math.sqrt(random.random())

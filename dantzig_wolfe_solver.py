@@ -12,10 +12,10 @@ from utils.solution_utils import (
     TOTAL_TIME_WEIGHT,
     ROUTE_TIME_WEIGHT,
     FAIRNESS_WEIGHT,
-    print_solution_pretty, plot_routes_on_map, route_cost,
+    print_solution_pretty, route_cost,
     MAX_ROUTE_MIN, BUS_CAPACITY
 )
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 from utils.geo_utils import travel_minutes
 from lns_solver import run_lns
 
@@ -440,9 +440,11 @@ def run_dantzig_wolfe(schools: List[School], stations: List[Station]) -> Solutio
 
 if __name__ == "__main__":
     random.seed(42)
-    schools, stations = gen_instance_multi()
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV: stops-b_7.csv + time-b_7.csv")
+    else:
+        schools, stations = gen_instance_multi()
     best_sol = run_dantzig_wolfe(schools, stations)
     print_solution_pretty(best_sol, stations, schools)
-    m = plot_routes_on_map(best_sol, stations, schools, title="Dantzig-Wolfe Optimized")
-    os.makedirs("./data", exist_ok=True)
-    m.save("./data/dw_routes.html")

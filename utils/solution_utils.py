@@ -1,9 +1,7 @@
 from typing import Dict, List, Tuple
 from collections import defaultdict
-import folium
-
 from utils.data_models import School, Station, Route, Solution, Event, Coord
-from utils.geo_utils import travel_minutes, haversine_km
+from utils.geo_utils import travel_minutes
 
 # ========= 參數區 =========
 BUS_CAPACITY = 40
@@ -268,7 +266,7 @@ def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[
             if not items:
                 continue
             # School_k,載 xx 人 (乘車 yy.y 分)；多校用頓號串接
-            right = "、".join([f"{sch_name.get(k, f'School_{k+1}')},載 {c:>2} 人 (乘車 {ride:>5.1f} 分, 距離 {haversine_km(s_map[st].coord, schools[k].coord):>5.2f} km)"
+            right = "、".join([f"{sch_name.get(k, f'School_{k+1}')},載 {c:>2} 人 (乘車 {ride:>5.1f} 分)"
                                for (k, c, ride) in items])
             print(f"{line_no:02d}. {s_map[st].name:<{station_w}} → {right}")
             line_no += 1
@@ -296,59 +294,3 @@ def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[
 
         print("-" * 60)
     print("")
-
-# ========= 地圖 =========
-def plot_routes_on_map(sol: Solution, stations: List[Station], schools: List[School], title: str = "Solution") -> folium.Map:
-    center = (sum(s.coord[0] for s in schools)/len(schools),
-              sum(s.coord[1] for s in schools)/len(schools))
-    m = folium.Map(location=center, zoom_start=12, control_scale=True)
-
-    # 學校標記
-    color_icon = ["red","darkblue","black"]
-    for sch in schools:
-        folium.Marker(sch.coord, tooltip=sch.name,
-                      icon=folium.Icon(color=color_icon[sch.idx%len(color_icon)],
-                                       icon="graduation-cap", prefix="fa")).add_to(m)
-
-    # 先畫所有站（灰）；tooltip 顯示各校需求拆分
-    for s in stations:
-        tt = sum(s.demands.values())
-        folium.CircleMarker(s.coord, radius=4, color="#999", fill=True, fill_opacity=0.5,
-                            tooltip=f"{s.name} 需求={tt} {s.demands}").add_to(m)
-
-    # 依事件畫路線與載人站的彩色圈
-    s_map = {s.idx:s for s in stations}
-    for b, r in enumerate(sol.routes, 1):
-        color = MAP_COLORS[(b-1)%len(MAP_COLORS)]
-        pts=[]
-        onboard = defaultdict(int)
-        for ev in r.events:
-            if ev[0]=='pickup':
-                st_idx, take_map = ev[1]  # type: ignore
-                coord = s_map[st_idx].coord
-                pts.append(coord)
-                for k, v in take_map.items():
-                    onboard[k] += v
-            else:
-                sch_idx = int(ev[1])   # type: ignore
-                pts.append(schools[sch_idx].coord)
-                onboard[sch_idx] = 0
-
-        # 補足最後回到學校的線段 (比照 simulate_route 的 auto_fill 邏輯)
-        remaining_schools = [k for k, v in onboard.items() if v > 0]
-        # 以最後一個事件點為起點
-        cur_pos = pts[-1] if pts else None
-        while remaining_schools and cur_pos:
-            # 尋找離目前位置最近的目標學校
-            nxt_sch_idx = min(remaining_schools, key=lambda k: travel_minutes(cur_pos, schools[k].coord))
-            nxt_coord = schools[nxt_sch_idx].coord
-            pts.append(nxt_coord)
-            cur_pos = nxt_coord
-            remaining_schools.remove(nxt_sch_idx)
-
-        if len(pts)>=2:
-            folium.PolyLine(pts, color=color, weight=4, tooltip=f"{title} Bus{b}").add_to(m)
-        for st,sch,c,_ in r.pickup_detail:
-            folium.CircleMarker(s_map[st].coord, radius=7, color=color, fill=True, fill_color=color,
-                                tooltip=f"{title} Bus{b} - {s_map[st].name} -> School_{sch+1} +{c}").add_to(m)
-    return m

@@ -7,22 +7,22 @@ from gurobipy import GRB
 
 from utils.data_models import School, Station, Route, Solution
 from utils.solution_utils import (
-    simulate_route,
+    simulate_route, build_solution,
     BUS_COUNT_WEIGHT,
     TOTAL_TIME_WEIGHT,
     ROUTE_TIME_WEIGHT,
     FAIRNESS_WEIGHT,
-    print_solution_pretty, plot_routes_on_map, route_cost,
-    MAX_ROUTE_MIN, BUS_CAPACITY
+    print_solution_pretty, route_cost,
+    MAX_ROUTE_MIN
 )
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 from utils.geo_utils import travel_minutes
 from lns_solver import run_lns
 
 # ---------- 參數設定 ----------
-MAX_TOTAL_BUSES = 6
+MAX_TOTAL_BUSES = 10
+BUS_CAPACITY = 40
 DW_ITERATIONS = 200
-MAX_PRICING_STARTS = 18
 MAX_PICKUP_BRANCHES = 10
 MAX_ROUTE_EVENTS = 14
 
@@ -126,14 +126,63 @@ class DantzigWolfeSolver:
     # ===============================
     # Initial columns
     # ===============================
+    def _generate_random_greedy_solution(self) -> Solution:
+        """使用隨機近鄰貪婪方式生成一個可行初始解"""
+        unserved = [g['id'] for g in self.groups]
+        routes = []
+        
+        while unserved and len(routes) < MAX_TOTAL_BUSES:
+            curr_route_gids = []
+            # 隨機挑選起點增加多樣性
+            start_gid = random.choice(unserved)
+            curr_route_gids.append(start_gid)
+            unserved.remove(start_gid)
+            
+            while unserved:
+                last_gid = curr_route_gids[-1]
+                last_st_idx = self.groups[last_gid]['st_idx']
+                last_coord = self.st_dict[last_st_idx].coord
+                
+                # 隨機選擇最近的 3 個候選站點之一，增加初始解多樣性
+                candidates = sorted(unserved, key=lambda gid: travel_minutes(last_coord, self.st_dict[self.groups[gid]['st_idx']].coord))
+                k = min(3, len(candidates))
+                next_gid = random.choice(candidates[:k])
+                
+                # 測試加入該群組後是否仍符合約束 (載重與最大行駛時間)
+                test_gids = curr_route_gids + [next_gid]
+                test_route = self._build_route_from_group_ids(test_gids)
+                load = sum(self.groups[x]['count'] for x in test_gids)
+                
+                if test_route and test_route.minutes <= MAX_ROUTE_MIN and load <= BUS_CAPACITY:
+                    curr_route_gids.append(next_gid)
+                    unserved.remove(next_gid)
+                else:
+                    break
+            
+            routes.append(self._build_route_from_group_ids(curr_route_gids))
+            
+        return build_solution(routes, self.stations)
+
+    def _build_route_from_group_ids(self, gids: List[int]) -> Route:
+        """根據群組 ID 序列構建 Route 物件，包含基本的 Drop 邏輯"""
+        if not gids: return None
+        path = [('g', gid) for gid in gids]
+        target_schs = list(set(self.groups[gid]['sch_idx'] for gid in gids))
+        last_st_idx = self.groups[gids[-1]]['st_idx']
+        curr_pos = self.st_dict[last_st_idx].coord
+        while target_schs:
+            nxt_sch = min(target_schs, key=lambda s: travel_minutes(curr_pos, self.schools[s].coord))
+            path.append(('s', nxt_sch))
+            curr_pos = self.schools[nxt_sch].coord
+            target_schs.remove(nxt_sch)
+        return self._build_route(path)
+    
     def initialize_columns(self):
         """使用啟發式解初始化路徑池，確保 Master Problem 一開始就是可行的"""
         print("[DW] 正在初始化路徑池 (Initial Columns)...")
-        # 透過 ACO 取得一個高品質初始解，確保滿足車輛數限制
-        for t in range(20):
-            init_sol = run_lns(self.schools, self.stations, print_log=False)
-            for r in init_sol.routes:
-                self._add_route(r)
+        init_sol = self._generate_random_greedy_solution()#run_lns(self.schools, self.stations, print_log=False)
+        for r in init_sol.routes:
+            self._add_route(r)
             
         # 檢查是否所有群體都被涵蓋
         covered_groups = set().union(*(r._g_ids for r in self.routes if hasattr(r, '_g_ids')))
@@ -177,11 +226,6 @@ class DantzigWolfeSolver:
             self.duals = [constrs[g].Pi for g in range(len(self.groups))]
             self.mu = bus_constr.Pi
 
-            # stabilization
-            #for g_idx in range(len(self.groups)):
-            #    self.duals[g_idx] = self.alpha * self.duals[g_idx] + (1 - self.alpha) * new_duals[g_idx]
-            #self.mu = self.alpha * self.mu + (1 - self.alpha) * new_mu
-
         return m
 
     def _groups_in_route(self, r: Route) -> List[int]:
@@ -198,14 +242,7 @@ class DantzigWolfeSolver:
         best_route = None
         best_rc = 0
         total_pos_dual = sum(max(0, d) for d in self.duals)
-
-        # 統計各群體目前在路徑池中被覆蓋的次數 (times)
-        coverage_counts = [len(self.group_to_routes[g['id']]) for g in self.groups]
-        sorted_groups = sorted(
-            self.groups,
-            key=lambda g: (coverage_counts[g['id']], -self.duals[g['id']])
-        )
-        sorted_gids = [g['id'] for g in sorted_groups]
+        group_gids = [g['id'] for g in self.groups]
         dist_matrix = self.dist_matrix
         group_direct_school_dist = self.group_direct_school_dist
 
@@ -320,7 +357,7 @@ class DantzigWolfeSolver:
 
 
             pickup_branches = 0
-            for gid in sorted_gids:
+            for gid in group_gids:
                 if visited_mask & (1 << gid):
                     continue
                 if group_direct_school_dist[gid] >= group_direct_school_dist[current_gid]:
@@ -360,7 +397,7 @@ class DantzigWolfeSolver:
         # Start DFS
         # =========================
 
-        for gid in sorted_gids[:MAX_PRICING_STARTS]:
+        for gid in group_gids:
             st_node = self.group_station_node[gid]
             dfs(
                 st_node,
@@ -445,9 +482,11 @@ def run_dantzig_wolfe(schools: List[School], stations: List[Station]) -> Solutio
 
 if __name__ == "__main__":
     random.seed(42)
-    schools, stations = gen_instance_multi()
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_30.csv", time_csv="./data/time-b_30.csv")
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV")
+    else:
+        schools, stations = gen_instance_multi()
     best_sol = run_dantzig_wolfe(schools, stations)
     print_solution_pretty(best_sol, stations, schools)
-    m = plot_routes_on_map(best_sol, stations, schools, title="Dantzig-Wolfe Optimized")
-    os.makedirs("./data", exist_ok=True)
-    m.save("./data/dfs_near_routes.html")

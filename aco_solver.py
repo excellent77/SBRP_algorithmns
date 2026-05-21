@@ -3,13 +3,14 @@ from collections import defaultdict
 import itertools, math, random
 
 from utils.data_models import School, Station, Route, Solution, Event, Coord
-from utils.geo_utils import travel_minutes, haversine_km
+from utils.geo_utils import travel_minutes
+
 from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes
 
 # ========= 參數區 =========
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
-MAX_TOTAL_BUSES = 6        # 總派車上限
+MAX_TOTAL_BUSES = 10        # 總派車上限
 TOTAL_STUDENTS = 200       # 需求總人數
 SERVE_ALL = True           # True：必須載完所有學生
 
@@ -288,8 +289,13 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
     eta = [[0.0]*n for _ in range(n)]
     for i in range(n):
         for j in range(n):
-            if i==j: eta[i][j]=0.0
-            else: eta[i][j]=1.0/(haversine_km(idx_to_coord[i], idx_to_coord[j])+1e-6)
+            if i==j:
+                eta[i][j]=0.0
+            else:
+                try:
+                    eta[i][j]=1.0/(travel_minutes(idx_to_coord[i], idx_to_coord[j])+1e-6)
+                except Exception:
+                    eta[i][j]=0.0
     tau = [[TAU_INIT]*n for _ in range(n)]
 
     best: Optional[Solution] = None
@@ -340,14 +346,19 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
 
 if __name__ == "__main__":
     # 為了能單獨執行，在此導入生成與後處理工具
-    from utils.instance_generator import gen_instance_multi
+    from utils.instance_generator import gen_instance_multi, load_default_instance_from_csv
     from utils.solution_utils import print_solution_pretty, audit_solution, plot_routes_on_map
 
     print("=== 啟動單純 ACO 演算法測試 ===")
     
     # 1. 產生測試實例
     random.seed(42)  # 固定隨機種子
-    schools, stations = gen_instance_multi()
+    csv_instance = load_default_instance_from_csv()
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print(f"[DATA] loaded instance from CSV: stops-b_7.csv + time-b_7.csv")
+    else:
+        schools, stations = gen_instance_multi()
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 2. 執行 ACO 核心邏輯

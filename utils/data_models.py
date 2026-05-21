@@ -13,6 +13,7 @@ class School:
     idx: int
     name: str
     coord: Coord
+    orig_idx: int = None
 
 @dataclass
 class Station:
@@ -21,6 +22,7 @@ class Station:
     coord: Coord
     demands: Dict[int, int]  # {school_idx: count}
     sector: int = 0
+    orig_idx: int = None
 
 # 事件：('pickup', (station_idx, {school_idx: take})) 或 ('drop', school_idx)
 Event = Tuple[str, Union[int, Tuple[int, Dict[int,int]]]]

@@ -9,7 +9,7 @@ from utils.solution_utils import(
     simulate_route, build_solution,
     print_solution_pretty, plot_routes_on_map, route_cost
 )
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_default_instance_from_csv
 from lns_solver import run_lns
 
 # ---------- Matheuristic 參數 ----------
@@ -154,7 +154,12 @@ def run_matheuristic(schools, stations) -> Solution:
 
 if __name__ == "__main__":
     random.seed(42)
-    schools, stations = gen_instance_multi()
+    csv_instance = load_default_instance_from_csv()
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV: stops-b_7.csv + time-b_7.csv")
+    else:
+        schools, stations = gen_instance_multi()
     
     best_sol = run_matheuristic(schools, stations)
     

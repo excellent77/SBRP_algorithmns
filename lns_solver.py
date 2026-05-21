@@ -2,9 +2,9 @@ from typing import List, Tuple, Optional
 import random, copy
 
 from utils.data_models import School, Station, Route, Solution
-from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes, route_max_load, print_solution_pretty, plot_routes_on_map
+from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes, route_max_load, print_solution_pretty
 from aco_solver import aco_construct_solution
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 
 # LNS 專用參數
 BUS_CAPACITY = 40
@@ -231,7 +231,12 @@ def run_lns(schools: List[School], stations: List[Station], print_log:bool=True)
 if __name__ == "__main__":
     # ========= 修改後的執行區塊 =========
     random.seed(42)  # 固定隨機種子
-    schools, stations = gen_instance_multi()
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV")
+    else:
+        schools, stations = gen_instance_multi()
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 呼叫 LNS 演算法
@@ -239,7 +244,3 @@ if __name__ == "__main__":
 
     # 後處理與列印 (與原程式相同)
     print_solution_pretty(best_lns_solution, stations, schools)
-    if SHOW_MAP:
-        m = plot_routes_on_map(best_lns_solution, stations, schools, title="LNS Optimized")
-        m.save("./data/lns_routes.html")
-        print("已輸出地圖：lns_routes.html")

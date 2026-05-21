@@ -14,7 +14,7 @@ from utils.solution_utils import (
     BUS_COUNT_WEIGHT, TOTAL_TIME_WEIGHT, ROUTE_TIME_WEIGHT, FAIRNESS_WEIGHT,
     MAX_ROUTE_MIN, BUS_CAPACITY, MAX_TOTAL_BUSES, route_cost
 )
-from utils.instance_generator import gen_instance_multi
+from utils.instance_generator import gen_instance_multi, load_default_instance_from_csv
 from utils.geo_utils import travel_minutes
 from lns_solver import run_lns
 
@@ -366,7 +366,12 @@ def run_dantzig_wolfe_2(schools: List[School], stations: List[Station]) -> Solut
 
 if __name__ == "__main__":
     random.seed(42)
-    schools, stations = gen_instance_multi()
+    csv_instance = load_default_instance_from_csv()
+    if csv_instance is not None:
+        schools, stations = csv_instance
+        print("[DATA] loaded instance from CSV: stops-b_7.csv + time-b_7.csv")
+    else:
+        schools, stations = gen_instance_multi()
     best_sol = run_dantzig_wolfe_2(schools, stations)
     if best_sol.feasible:
         print_solution_pretty(best_sol, stations, schools)
