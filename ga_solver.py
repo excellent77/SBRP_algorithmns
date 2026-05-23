@@ -8,7 +8,7 @@ from utils.geo_utils import travel_minutes
 from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 
 # ---------- GA 參數區 ----------
-POP_SIZE = 1000           # 種群大小
+POP_SIZE = 500           # 種群大小
 GENERATIONS = 300       # 迭代代數
 CROSSOVER_RATE = 0.8    # 交配機率
 MUTATION_RATE = 0.6     # 突變機率
@@ -16,7 +16,7 @@ ELITE_COUNT = 100         # 菁英保留數
 
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
-MAX_TOTAL_BUSES = 6
+MAX_TOTAL_BUSES = 10
 
 class GASolver:
     def __init__(self, schools: List[School], stations: List[Station]):
@@ -37,46 +37,63 @@ class GASolver:
         self.m = MAX_TOTAL_BUSES
         self.num_delimiters = self.m - 1
         self.total_demand = sum(g['count'] for g in self.groups)
+        # evaluation cache: key=tuple(chromosome) -> (feasible, Solution, cost)
+        self._eval_cache = {}
 
     def _create_individual(self) -> List[int]:
-        """採用隨機貪婪的方式產生初始解：地理最近鄰排列 + 貪婪裝箱切分"""
-        remaining = list(range(self.num_groups))
-        if not remaining: return [-1] * self.num_delimiters
-        
-        ordered_groups = []
-        # 隨機挑選起點
-        curr_g_idx = random.choice(remaining)
-        remaining.remove(curr_g_idx)
-        ordered_groups.append(curr_g_idx)
-        
-        # 1. 隨機貪婪序列生成 (Randomized Nearest Neighbor)
-        while remaining:
-            curr_st_idx = self.groups[curr_g_idx]['station_idx']
-            curr_coord = self.st_dict[curr_st_idx].coord
-            
-            # 計算剩餘站點的距離並排序
-            candidates = [(rg, travel_minutes(curr_coord, self.st_dict[self.groups[rg]['station_idx']].coord)) for rg in remaining]
-            candidates.sort(key=lambda x: x[1])
-            
-            # 從最近的 K 個中隨機挑選一個
-            k = min(3, len(candidates))
-            curr_g_idx = random.choice(candidates[:k])[0]
-            remaining.remove(curr_g_idx)
-            ordered_groups.append(curr_g_idx)
+        """採用 DFS 生成染色體：所有 group 和 delimiter 的排列組合，空段視為未使用車輛。"""
+        if self.num_groups == 0:
+            return [-1] * self.num_delimiters
 
-        # 2. 貪婪切分 (-1)
-        ind = []
-        curr_seg = []
-        delims_left = self.num_delimiters
-        for g_idx in ordered_groups:
-            if self._build_route_from_groups(curr_seg + [g_idx]) is not None:
-                curr_seg.append(g_idx)
-            elif delims_left > 0:
-                ind.extend(curr_seg + [-1]); delims_left -= 1
-                curr_seg = [g_idx]
-            else: curr_seg.append(g_idx)
-        ind.extend(curr_seg + [-1] * delims_left)
-        return ind
+        used = [False] * self.num_groups
+        solution = None
+        max_nodes = 200000
+        visited_nodes = 0
+
+        def dfs(chromosome: List[int], current_segment: List[int], delimiters_left: int, used_count: int) -> bool:
+            nonlocal solution, visited_nodes
+            if solution is not None:
+                return True
+            visited_nodes += 1
+            if visited_nodes > max_nodes:
+                return False
+
+            if used_count == self.num_groups:
+                solution = chromosome + [-1] * delimiters_left
+                return True
+
+            # 優先嘗試延續當前路徑，再嘗試分隔
+            for g_idx in range(self.num_groups):
+                if used[g_idx]:
+                    continue
+                next_segment = current_segment + [g_idx]
+                if self._build_route_from_groups(next_segment) is None:
+                    continue
+
+                used[g_idx] = True
+                if dfs(chromosome + [g_idx], next_segment, delimiters_left, used_count + 1):
+                    return True
+                used[g_idx] = False
+
+            if delimiters_left > 0 and current_segment:
+                if dfs(chromosome + [-1], [], delimiters_left - 1, used_count):
+                    return True
+
+            return False
+
+        # 先從最小群組數、最多路徑限制開始 DFS
+        group_order = list(range(self.num_groups))
+        random.shuffle(group_order)
+        for first in group_order:
+            used[first] = True
+            if dfs([first], [first], self.num_delimiters, 1):
+                return solution
+            used[first] = False
+
+        # 如果 DFS 無法在節點限制內找到，可降級為隨機排列避免程式停滯
+        chromosome = list(range(self.num_groups)) + [-1] * self.num_delimiters
+        random.shuffle(chromosome)
+        return chromosome
 
     def _build_route_from_groups(self, group_indices: List[int]) -> Route:
         """根據群組序列建立 Route 並加入 Greedy Drop 邏輯"""
@@ -146,6 +163,16 @@ class GASolver:
         if not feasible or len(served_groups) != self.num_groups:
             return build_solution([], self.stations)
         return build_solution(routes, self.stations)
+
+    def _evaluate(self, chromosome: List[int]):
+        """Evaluate chromosome with caching. Returns (feasible, Solution, cost)."""
+        key = tuple(chromosome)
+        if key in self._eval_cache:
+            return self._eval_cache[key]
+        sol = self.decode(list(chromosome))
+        cost = solution_cost(sol) if sol.feasible else float('inf')
+        self._eval_cache[key] = (sol.feasible, sol, cost)
+        return self._eval_cache[key]
 
     def crossover_segment(self, p1: List[int], p2: List[int]) -> List[int]:
         """組合父母的完整巴士路徑片段，並嘗試貪婪合併其餘群組，且確保符合限制式"""
@@ -239,23 +266,33 @@ class GASolver:
     def run(self) -> Solution:
         # 初始化：確保起始種群皆為可行解
         population = []
-        while len(population) < POP_SIZE:
+        max_attempts = 5000
+        for attempts in tqdm(range(max_attempts)):
+            if len(population) >= POP_SIZE:
+                break
             ind = self._create_individual()
             if self.decode(ind).feasible:
                 population.append(ind)
+                tqdm.write(f"[GA] 已生成 {len(population)}/{POP_SIZE} 可行個體 (嘗試次數: {attempts})")
 
-        best_sol = None 
+        if not population:
+            raise RuntimeError(
+                f"[GA] 無法在 {max_attempts} 次嘗試內生成任何可行個體，請檢查約束條件或調整初始化方法。"
+            )
+
+        best_sol = None
         print(f"[GA] 啟動進化演算法, 世代數: {GENERATIONS}, 群組總數: {self.num_groups}")
         for gen in tqdm(range(1, GENERATIONS + 1)):
-            scored_pop = []
+            scored_pop = []  # list of (chromosome, Solution, cost)
             for ind in population:
-                sol = self.decode(ind)
-                if sol.feasible:
-                    #sol = try_merge_routes(sol, self.stations, self.schools)
-                    scored_pop.append((ind, sol))
-            
+                feasible, sol, cost = self._evaluate(ind)
+                if feasible:
+                    scored_pop.append((ind, sol, cost))
 
-            scored_pop.sort(key=lambda x: solution_cost(x[1]))
+            if not scored_pop:
+                raise RuntimeError("[GA] 當前種群內沒有任何可行個體，演算法無法繼續。")
+
+            scored_pop.sort(key=lambda x: x[2])
             curr_best_sol = scored_pop[0][1]
             if best_sol is None or solution_cost(curr_best_sol) < solution_cost(best_sol):
                 best_sol = copy.deepcopy(curr_best_sol)
@@ -267,6 +304,9 @@ class GASolver:
                 c1 = self.crossover_segment(p1, p2) if random.random() < CROSSOVER_RATE else list(p1)
                 c2 = self.crossover_segment(p2, p1) if random.random() < CROSSOVER_RATE else list(p2)
                 self.mutate(c1); self.mutate(c2)
+                # evaluate children (cache) to avoid redundant decode later
+                self._evaluate(c1)
+                self._evaluate(c2)
                 new_pop.extend([c1, c2])
             population = new_pop[:POP_SIZE]
         return best_sol
@@ -275,7 +315,8 @@ class GASolver:
         # 確保樣本數不超過當前可用種群數量
         sample_size = min(k, len(scored_pop))
         selected = random.sample(scored_pop, sample_size)
-        selected.sort(key=lambda x: solution_cost(x[1]))
+        # scored_pop entries are (chromosome, Solution, cost)
+        selected.sort(key=lambda x: x[2])
         return selected[0][0]
 
 def run_ga(schools: List[School], stations: List[Station]) -> Solution:

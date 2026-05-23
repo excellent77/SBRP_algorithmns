@@ -21,7 +21,7 @@ from lns_solver import run_lns
 
 # ---------- 參數設定 ----------
 MAX_TOTAL_BUSES = 6
-DW_ITERATIONS = 2000
+DW_ITERATIONS = 100
 MAX_PICKUP_BRANCHES = float("inf")  #15
 MAX_ROUTE_EVENTS = float("inf")  #20
 

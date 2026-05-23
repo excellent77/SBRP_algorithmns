@@ -1,5 +1,6 @@
 from typing import List, Tuple, Optional
 import random, copy
+from tqdm import tqdm
 
 from utils.data_models import School, Station, Route, Solution
 from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes, route_max_load, print_solution_pretty
@@ -9,7 +10,7 @@ from utils.instance_generator import gen_instance_multi, load_instance_from_csv
 # LNS 專用參數
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
-MAX_TOTAL_BUSES = 6        # 總派車上限
+MAX_TOTAL_BUSES = 10        # 總派車上限
 LNS_ITERATIONS = 300    # LNS 迭代次數
 DESTROY_DEGREE = 0.5   # 每次破壞%的站點
 SHOW_MAP = True
@@ -200,7 +201,7 @@ def run_lns(schools: List[School], stations: List[Station], print_log:bool=True)
     if print_log:
         print(f"[LNS] 初始解成本: {solution_cost(best_sol):.1f}")
     
-    for it in range(1, LNS_ITERATIONS + 1):
+    for it in tqdm(range(1, LNS_ITERATIONS + 1), desc="LNS Iterations"):
         # 1. 破壞
         # 混合使用隨機移除與路線移除，提高減車機會
         if random.random() < 0.3 and len(current_sol.routes) > 1:
@@ -231,7 +232,7 @@ def run_lns(schools: List[School], stations: List[Station], print_log:bool=True)
 if __name__ == "__main__":
     # ========= 修改後的執行區塊 =========
     random.seed(42)  # 固定隨機種子
-    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_8.csv", time_csv="./data/time-b_8.csv")
     if csv_instance is not None:
         schools, stations = csv_instance
         print("[DATA] loaded instance from CSV")

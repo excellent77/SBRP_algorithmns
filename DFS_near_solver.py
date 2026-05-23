@@ -22,9 +22,11 @@ from lns_solver import run_lns
 # ---------- 參數設定 ----------
 MAX_TOTAL_BUSES = 10
 BUS_CAPACITY = 40
-DW_ITERATIONS = 200
-MAX_PICKUP_BRANCHES = 10
-MAX_ROUTE_EVENTS = 14
+DW_ITERATIONS = 2000
+MAX_PICKUP_BRANCHES = float("inf")#10
+MAX_ROUTE_EVENTS = float("inf")#114
+
+lns_routes = []
 
 # ===============================
 # Dantzig-Wolfe Solver
@@ -238,18 +240,36 @@ class DantzigWolfeSolver:
     # ===============================
     def pricing(self):
 
-        n = self.n_groups
         best_route = None
-        best_rc = 0
-        total_pos_dual = sum(max(0, d) for d in self.duals)
+        best_rc = -1e-4
         group_gids = [g['id'] for g in self.groups]
         dist_matrix = self.dist_matrix
         group_direct_school_dist = self.group_direct_school_dist
 
+        def pickup_fairness_increment(new_gid: int, path: list) -> float:
+            new_sch = self.group_school_idx[new_gid]
+            new_dist = self.dist_matrix[self.group_station_node[new_gid]][self.school_nodes[new_sch]]
+            penalty = 0.0
+
+            for ev_type, prev_gid in path:
+                if ev_type != 'g':
+                    continue
+                prev_sch = self.group_school_idx[prev_gid]
+                if prev_sch != new_sch:
+                    continue  # 只比較同一所學校的群組
+
+                prev_dist = self.dist_matrix[self.group_station_node[prev_gid]][self.school_nodes[prev_sch]]
+
+                # prev 比 new 早上車 → prev 的 acc > new 的 acc
+                if prev_dist < new_dist:
+                    penalty += 1.0
+                elif new_dist < prev_dist:
+                    pass
+            return penalty
+
         # =========================
-        # DFS + DP
+        # DFS
         # =========================
-        memo = {}
         def dfs(
             curr_node,
             current_gid,
@@ -264,45 +284,31 @@ class DantzigWolfeSolver:
         ):
             nonlocal best_route, best_rc
 
-            if best_rc < -0.0001:
+            if best_rc < -1e-4:
                 return
+
             if len(path) > MAX_ROUTE_EVENTS:
                 return
 
-            current_rc = (
-                BUS_COUNT_WEIGHT
-                + TOTAL_TIME_WEIGHT * time
-                + ROUTE_TIME_WEIGHT * ivm_acc
-                + FAIRNESS_WEIGHT * fairness_acc
-                - dual_acc
-                - self.mu
-            )
-
-            if current_rc - (total_pos_dual - dual_acc) > best_rc:
-                return
-
-            state = (
-                curr_node,
-                current_gid,
-                visited_mask,
-                onboard_mask,
-                load
-            )
-
-            prev_best = memo.get(state)
-            if prev_best is not None and prev_best <= current_rc:
-                return
-
-            memo[state] = current_rc
             if onboard_mask == 0 and path:
+                current_rc = (
+                    BUS_COUNT_WEIGHT
+                    + TOTAL_TIME_WEIGHT * time
+                    + ROUTE_TIME_WEIGHT * ivm_acc
+                    + FAIRNESS_WEIGHT * fairness_acc
+                    - dual_acc
+                    - self.mu
+                )
                 if current_rc < best_rc:
                     temp_route = self._build_route(path)
                     temp_g_set = frozenset(self._groups_in_route(temp_route))
+                    for r in lns_routes:
+                        if temp_route.events == r.events:
+                            lns_routes.remove(r) # 從 LNS 解中移除重複路徑，增加 DW 解的多樣性
                     if temp_g_set not in self.route_pool_keys: # 檢查是否為重複路徑
                         best_rc = current_rc
                         best_route = temp_route
-                        return # 找到新的最佳路徑，立即停止 DFS 搜尋
-                #return
+                        return
             
 
             if time > MAX_ROUTE_MIN:
@@ -374,6 +380,7 @@ class DantzigWolfeSolver:
 
                 new_visited = visited_mask | (1 << gid)
                 new_onboard = onboard_mask | (1 << gid)
+                new_fairness = fairness_acc + pickup_fairness_increment(gid, path)
                 new_ivm = ivm_acc + load * dist
                 new_path = path + [('g', gid)]
 
@@ -384,7 +391,7 @@ class DantzigWolfeSolver:
                     new_ivm,
                     load + self.group_count[gid],
                     dual_acc + self.duals[gid],
-                    fairness_acc,
+                    new_fairness,
                     new_visited,
                     new_onboard,
                     new_path
@@ -411,8 +418,8 @@ class DantzigWolfeSolver:
                 (1 << gid),
                 [('g', gid)]
             )
-            if best_route and best_rc < -1e-4:
-                break
+            #if best_route and best_rc < -1e-4:
+            #    break
         if best_route:
             tqdm.write(f"[Pricing] Found route RC={best_rc:.2f} path_length={len(best_route.events)}")
 
@@ -457,9 +464,9 @@ class DantzigWolfeSolver:
             if new_route is None:
                 tqdm.write(f"[DW Iter {it:03d}] 找不到具有負縮減成本的路徑，演算法收斂。")
                 break
-            if not self._add_route(new_route): # 使用 _add_route 進行去重檢查並嘗試加入
-                tqdm.write(f"[DW Iter {it:03d}] 找到重複路徑，演算法收斂。") # 如果是重複路徑，則視為收斂
-                break
+            #if not self._add_route(new_route): # 使用 _add_route 進行去重檢查並嘗試加入
+            #    tqdm.write(f"[DW Iter {it:03d}] 找到重複路徑，演算法收斂。") # 如果是重複路徑，則視為收斂
+            #    break
 
         # final integer solve
         m = self.solve_master(relax=False)
@@ -480,13 +487,18 @@ def run_dantzig_wolfe(schools: List[School], stations: List[Station]) -> Solutio
     solver = DantzigWolfeSolver(schools, stations)
     return solver.run()
 
+
 if __name__ == "__main__":
     random.seed(42)
-    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_30.csv", time_csv="./data/time-b_30.csv")
+    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
     if csv_instance is not None:
         schools, stations = csv_instance
         print("[DATA] loaded instance from CSV")
     else:
         schools, stations = gen_instance_multi()
+    solution = run_lns(schools, stations)
+    for r in solution.routes:
+        lns_routes.append(r)
     best_sol = run_dantzig_wolfe(schools, stations)
     print_solution_pretty(best_sol, stations, schools)
+    print(lns_routes)
