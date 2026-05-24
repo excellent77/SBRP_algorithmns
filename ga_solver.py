@@ -3,25 +3,26 @@ import copy
 from tqdm import tqdm
 from typing import List
 from utils.data_models import School, Station, Route, Solution
-from utils.solution_utils import simulate_route, solution_cost, build_solution, print_solution_pretty
-from utils.geo_utils import travel_minutes
-from utils.instance_generator import gen_instance_multi, load_instance_from_csv
+from utils.solution_utils import(
+    MAX_ROUTE_MIN, BUS_CAPACITY, MAX_TOTAL_BUSES,
+    build_route, build_solution, print_solution_pretty
+)
+from utils.instance_processer import load_instance_from_csv
+
 
 # ---------- GA 參數區 ----------
-POP_SIZE = 500           # 種群大小
+MAX_ATTEMPTS = 5000
+POP_SIZE = 4000           # 種群大小
 GENERATIONS = 300       # 迭代代數
 CROSSOVER_RATE = 0.8    # 交配機率
 MUTATION_RATE = 0.6     # 突變機率
 ELITE_COUNT = 100         # 菁英保留數
 
-BUS_CAPACITY = 40
-MAX_ROUTE_MIN = 60.0
-MAX_TOTAL_BUSES = 10
-
-class GASolver:
-    def __init__(self, schools: List[School], stations: List[Station]):
+class GASolver(object):
+    def __init__(self, schools: List[School], stations: List[Station], time_matrix: List[List[float]]):
         self.schools = schools
         self.stations = stations
+        self.time_matrix = time_matrix
         self.st_dict = {s.idx: s for s in stations}
         
         # 定義群 (Group): 同一站點且同目的地學校的學生
@@ -34,20 +35,18 @@ class GASolver:
                     'count': count
                 })
         self.num_groups = len(self.groups)
-        self.m = MAX_TOTAL_BUSES
-        self.num_delimiters = self.m - 1
+        self.num_delimiters = MAX_TOTAL_BUSES - 1
         self.total_demand = sum(g['count'] for g in self.groups)
         # evaluation cache: key=tuple(chromosome) -> (feasible, Solution, cost)
         self._eval_cache = {}
 
-    def _create_individual(self) -> List[int]:
+    def _create_individual(self, max_nodes: int = 200000) -> List[int]:
         """採用 DFS 生成染色體：所有 group 和 delimiter 的排列組合，空段視為未使用車輛。"""
         if self.num_groups == 0:
             return [-1] * self.num_delimiters
 
         used = [False] * self.num_groups
         solution = None
-        max_nodes = 200000
         visited_nodes = 0
 
         def dfs(chromosome: List[int], current_segment: List[int], delimiters_left: int, used_count: int) -> bool:
@@ -105,7 +104,7 @@ class GASolver:
         
         # Pickup: 依染色體順序，合併相同站點連續 Pickup 以符合資料結構
         curr_st_idx = -1
-        curr_demands = {}
+        curr_demands = {} # school_idx -> count for current station pickup
         for g_idx in group_indices:
             g = self.groups[g_idx]
             st_idx, sch_idx, count = g['station_idx'], g['school_idx'], g['count']
@@ -116,24 +115,23 @@ class GASolver:
                 curr_demands[sch_idx] = curr_demands.get(sch_idx, 0) + count
             else:
                 if curr_st_idx != -1:
-                    events.append(('pickup', (curr_st_idx, curr_demands)))
+                    events.append(Station(curr_st_idx, self.st_dict[curr_st_idx].name, curr_demands, self.st_dict[curr_st_idx].orig_idx))
                 curr_st_idx = st_idx
                 curr_demands = {sch_idx: count}
         if curr_st_idx != -1:
-            events.append(('pickup', (curr_st_idx, curr_demands)))
-            
+            events.append(Station(curr_st_idx, self.st_dict[curr_st_idx].name, curr_demands, self.st_dict[curr_st_idx].orig_idx))
+
         # Greedy Drop: 採用最近學校加入法
         last_st_idx = self.groups[group_indices[-1]]['station_idx']
-        last_pos = self.st_dict[last_st_idx].coord
+        last_pos = self.st_dict[last_st_idx].orig_idx
         rem_schools = list(target_schools)
         while rem_schools:
-            nxt = min(rem_schools, key=lambda k: travel_minutes(last_pos, self.schools[k].coord))
-            events.append(('drop', nxt))
-            last_pos = self.schools[nxt].coord
+            nxt = min(rem_schools, key=lambda k: self.time_matrix[last_pos][self.schools[k].orig_idx])
+            events.append(self.schools[nxt])
+            last_pos = self.schools[nxt].orig_idx
             rem_schools.remove(nxt)
             
-        r = Route(events=events)
-        r.minutes, r.in_vehicle_minutes, r.pickup_detail, r.fairness_penalty = simulate_route(r, self.schools, self.st_dict)
+        r = build_route(events, self.schools, self.st_dict, self.time_matrix)
         
         # 確保合理性: 不大於最大公車容量，不大於行駛時間
         if total_load > BUS_CAPACITY or r.minutes > MAX_ROUTE_MIN:
@@ -170,7 +168,7 @@ class GASolver:
         if key in self._eval_cache:
             return self._eval_cache[key]
         sol = self.decode(list(chromosome))
-        cost = solution_cost(sol) if sol.feasible else float('inf')
+        cost = sol.solution_cost() if sol.feasible else float('inf')
         self._eval_cache[key] = (sol.feasible, sol, cost)
         return self._eval_cache[key]
 
@@ -266,8 +264,7 @@ class GASolver:
     def run(self) -> Solution:
         # 初始化：確保起始種群皆為可行解
         population = []
-        max_attempts = 5000
-        for attempts in tqdm(range(max_attempts)):
+        for attempts in tqdm(range(MAX_ATTEMPTS), desc="Generating initial population"):
             if len(population) >= POP_SIZE:
                 break
             ind = self._create_individual()
@@ -277,8 +274,7 @@ class GASolver:
 
         if not population:
             raise RuntimeError(
-                f"[GA] 無法在 {max_attempts} 次嘗試內生成任何可行個體，請檢查約束條件或調整初始化方法。"
-            )
+                f"[GA] 無法在 {MAX_ATTEMPTS} 次嘗試內生成任何可行個體，請檢查約束條件或調整初始化方法。"            )
 
         best_sol = None
         print(f"[GA] 啟動進化演算法, 世代數: {GENERATIONS}, 群組總數: {self.num_groups}")
@@ -294,9 +290,9 @@ class GASolver:
 
             scored_pop.sort(key=lambda x: x[2])
             curr_best_sol = scored_pop[0][1]
-            if best_sol is None or solution_cost(curr_best_sol) < solution_cost(best_sol):
+            if best_sol is None or curr_best_sol.solution_cost() < best_sol.solution_cost():
                 best_sol = copy.deepcopy(curr_best_sol)
-                tqdm.write(f"[Gen {gen:03d}] 發現更優解 -> 成本: {solution_cost(best_sol):.1f} 車輛數:{len(best_sol.routes)}")
+                tqdm.write(f"[Gen {gen:03d}] 發現更優解 -> 成本: {best_sol.solution_cost():.1f} 車輛數:{len(best_sol.routes)}")
 
             new_pop = [item[0] for item in scored_pop[:ELITE_COUNT]]
             while len(new_pop) < POP_SIZE:
@@ -319,24 +315,18 @@ class GASolver:
         selected.sort(key=lambda x: x[2])
         return selected[0][0]
 
-def run_ga(schools: List[School], stations: List[Station]) -> Solution:
-    solver = GASolver(schools, stations)
+def run_ga(schools: List[School], stations: List[Station], time_matrix: List[List[float]]) -> Solution:
+    solver = GASolver(schools, stations, time_matrix)
     return solver.run()
 
 if __name__ == "__main__":
     # 測試執行區塊
     random.seed(42)
-    csv_instance = load_instance_from_csv(stops_csv="./data/stops-b_8.csv", time_csv="./data/time-b_8.csv")
-    if csv_instance is not None:
-        schools, stations = csv_instance
-        print("[DATA] loaded instance from CSV")
-    else:
-        schools, stations = gen_instance_multi()
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 執行 GA 演算法
-    best_ga_solution = run_ga(schools, stations)
+    best_ga_solution = run_ga(schools, stations, time_matrix)
 
     # 輸出結果
     print_solution_pretty(best_ga_solution, stations, schools)
-    

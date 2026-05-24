@@ -10,7 +10,7 @@ from utils.solution_utils import (
     print_solution_pretty, route_cost, try_merge_routes,
     MAX_ROUTE_MIN, BUS_CAPACITY
 )
-from utils.instance_generator import gen_instance_multi, load_instance_from_csv
+from utils.instance_processer import gen_instance_multi, load_instance_from_csv
 from utils.geo_utils import travel_minutes
 
 # ---------- 參數設定 ----------

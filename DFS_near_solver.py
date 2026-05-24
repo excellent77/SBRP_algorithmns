@@ -15,7 +15,7 @@ from utils.solution_utils import (
     print_solution_pretty, route_cost,
     MAX_ROUTE_MIN
 )
-from utils.instance_generator import gen_instance_multi, load_instance_from_csv
+from utils.instance_processer import gen_instance_multi, load_instance_from_csv
 from utils.geo_utils import travel_minutes
 from lns_solver import run_lns
 
@@ -105,25 +105,6 @@ class DantzigWolfeSolver:
             self.school_group_masks[sch_idx] |= 1 << gid
             self.school_group_loads[sch_idx] += g['count']
 
-    # ===============================
-    # Route Pool Management
-    # ===============================
-    def _add_route(self, r: Route) -> bool:
-        """將路徑加入池中並進行去重檢查，返回是否成功加入"""
-        g_ids = self._groups_in_route(r)
-        g_set = frozenset(g_ids)
-        if not g_set or g_set in self.route_pool_keys:
-            return False
-        
-        route_idx = len(self.routes)
-        r._g_ids = g_set # Cache for later modeling efficiency
-        self.routes.append(r)
-        self.route_pool_keys.add(g_set)
-        
-        # Update group to routes mapping index
-        for g_id in g_ids:
-            self.group_to_routes[g_id].append(route_idx)
-        return True
 
     # ===============================
     # Initial columns
@@ -289,28 +270,6 @@ class DantzigWolfeSolver:
 
             if len(path) > MAX_ROUTE_EVENTS:
                 return
-
-            if onboard_mask == 0 and path:
-                current_rc = (
-                    BUS_COUNT_WEIGHT
-                    + TOTAL_TIME_WEIGHT * time
-                    + ROUTE_TIME_WEIGHT * ivm_acc
-                    + FAIRNESS_WEIGHT * fairness_acc
-                    - dual_acc
-                    - self.mu
-                )
-                if current_rc < best_rc:
-                    temp_route = self._build_route(path)
-                    temp_g_set = frozenset(self._groups_in_route(temp_route))
-                    for r in lns_routes:
-                        if temp_route.events == r.events:
-                            lns_routes.remove(r) # 從 LNS 解中移除重複路徑，增加 DW 解的多樣性
-                    if temp_g_set not in self.route_pool_keys: # 檢查是否為重複路徑
-                        best_rc = current_rc
-                        best_route = temp_route
-                        return
-            
-
             if time > MAX_ROUTE_MIN:
                 return
             if load > BUS_CAPACITY:
@@ -397,9 +356,23 @@ class DantzigWolfeSolver:
                     new_path
                 )
                 pickup_branches += 1
-                if pickup_branches >= MAX_PICKUP_BRANCHES:
-                    break
-
+                #if pickup_branches >= MAX_PICKUP_BRANCHES:
+               #     break
+            if onboard_mask == 0 and path:
+                current_rc = (
+                    BUS_COUNT_WEIGHT
+                    + TOTAL_TIME_WEIGHT * time
+                    + ROUTE_TIME_WEIGHT * ivm_acc
+                    + FAIRNESS_WEIGHT * fairness_acc
+                    - dual_acc
+                    - self.mu
+                )
+                temp_route = self._build_route(path)
+                temp_g_set = frozenset(self._groups_in_route(temp_route))
+                if temp_g_set and temp_g_set not in self.route_pool_keys:
+                    if current_rc < best_rc:
+                        best_rc = current_rc
+                        best_route = temp_route
         # =========================
         # Start DFS
         # =========================
@@ -464,9 +437,9 @@ class DantzigWolfeSolver:
             if new_route is None:
                 tqdm.write(f"[DW Iter {it:03d}] 找不到具有負縮減成本的路徑，演算法收斂。")
                 break
-            #if not self._add_route(new_route): # 使用 _add_route 進行去重檢查並嘗試加入
-            #    tqdm.write(f"[DW Iter {it:03d}] 找到重複路徑，演算法收斂。") # 如果是重複路徑，則視為收斂
-            #    break
+            if not self._add_route(new_route): # 使用 _add_route 進行去重檢查並嘗試加入
+                tqdm.write(f"[DW Iter {it:03d}] 找到重複路徑，演算法收斂。") # 如果是重複路徑，則視為收斂
+                break
 
         # final integer solve
         m = self.solve_master(relax=False)
@@ -501,4 +474,3 @@ if __name__ == "__main__":
         lns_routes.append(r)
     best_sol = run_dantzig_wolfe(schools, stations)
     print_solution_pretty(best_sol, stations, schools)
-    print(lns_routes)

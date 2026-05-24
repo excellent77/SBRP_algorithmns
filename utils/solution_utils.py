@@ -1,63 +1,77 @@
+import pandas as pd
 from typing import Dict, List, Tuple
 from collections import defaultdict
-from utils.data_models import School, Station, Route, Solution, Event, Coord
-from utils.geo_utils import travel_minutes
+
+from utils.data_models import Point, School, Station, Route, Solution
 
 # ========= 參數區 =========
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
 MAX_TOTAL_BUSES = 6
-ROUTE_TIME_WEIGHT = 1.0
-TOTAL_TIME_WEIGHT = 10.0
-BUS_COUNT_WEIGHT = 1000.0 # 顯著提高權重以優先減少派車數
-FAIRNESS_WEIGHT = 100.0      # 先後順序謬誤費權重
-
-MAP_COLORS: List[str] = ["blue","green","purple","orange","darkred","cadetblue",
-                         "darkgreen","darkpurple","lightred","lightgreen","lightblue","gray"]
-
-# 防卡護欄
-# MAX_EVENTS_PER_ROUTE = 200 # Not directly used here, but good to note if it were.
 
 
-# ========= 路線模擬：由事件序列計算分鐘、人×分、每站-校乘車時間 =========
-def simulate_route(route: Route, schools: List[School], stations: Dict[int, Station], auto_fill:bool=False) -> Tuple[float,float,List[Tuple[int,int,int,float]], float]:
-    if not route.events:
-        return 0.0, 0.0, [], 0.0
 
-    def ev_coord(ev: Event) -> Coord:
-        et, data = ev
-        if et == 'pickup':
-            st_idx, _ = data  # type: ignore
-            return stations[st_idx].coord
+def load_time_matrix(time_csv: str) -> Tuple[List[List[float]], Dict[int,int]]:
+    df_time = pd.read_csv(time_csv, index_col=0)
+    df_time.index = df_time.index.astype(int)
+    df_time.columns = df_time.columns.astype(int)
+    time_matrix = df_time.values.tolist()
+    for i in range(len(time_matrix)):
+        time_matrix[i][i] = 0.0
+    idx_map = {idx: i for i, idx in enumerate(df_time.index)}
+    return time_matrix, idx_map
+
+# ========= Route, Solution Build =========
+def route_max_load(route: Route) -> int:
+    """計算路線任一時刻的最大車上人數。"""
+    onboard_by_school: Dict[int, int] = defaultdict(int)
+    max_load = 0
+    for e in route.events:
+        if isinstance(e, Station):
+            for sch_idx, count in e.demands.items():
+                onboard_by_school[int(sch_idx)] += count
+        elif isinstance(e, School):
+            sch_idx = int(e.idx)
+            onboard_by_school[sch_idx] = 0
         else:
-            sch_idx = data  # type: ignore
-            return schools[int(sch_idx)].coord
+            raise RuntimeError("未知事件類型")
+        max_load = max(max_load, sum(onboard_by_school.values()))
+    return max_load
+
+def build_route(
+        events: List[Point], 
+        schools: List[School], 
+        stations: Dict[int, Station],
+        time_matrix: List[List[float]],
+        auto_fill: bool = False
+    ) -> Tuple[float,float,List[Tuple[int,int,int,float]], float]:
+    
+    if not events:
+        return Route()
 
     minutes = 0.0
     fairness_penalty = 0.0
     ivm = 0.0
     pickup_detail: List[Tuple[int,int,int,float]] = []
-    onboard_by_school: Dict[int,int] = defaultdict(int)
-    batches: List[Dict] = []  # 每批上車紀錄：{'station','school','count','acc'}
+    onboard_by_school: Dict[int,int] = defaultdict(int) # key=school_idx, value=目前車上該校學生數
+    batches: List[Dict] = []  # 每批上車紀錄：{'station','school','count','acc'} 
     finished_batches: List[Dict] = [] # 已送達紀錄
 
-    cur = ev_coord(route.events[0])
-    for e in route.events:
-        nxt = ev_coord(e)
-        travel = travel_minutes(cur, nxt)
+    cur = events[0].orig_idx
+    for e in events:
+        nxt = e.orig_idx
+        travel = time_matrix[cur][nxt]
         minutes += travel
         total_onboard = sum(onboard_by_school.values())
         ivm += travel * total_onboard
         for b in batches: b['acc'] += travel
 
-        et, data = e
-        if et == 'pickup':
-            st_idx, take_map = data  # type: ignore
-            for k, c in take_map.items():
+        if isinstance(e, Station):
+            for k, c in e.demands.items():
                 onboard_by_school[k] += c
-                batches.append({'station':st_idx, 'school':k, 'count':c, 'acc':0.0})
+                batches.append({'station': e.idx, 'school': k, 'count': c, 'acc': 0.0})
         else:  # drop
-            sch_idx = int(data)  # type: ignore
+            sch_idx = int(e.idx)
             keep = []
             for b in batches:
                 if b['school'] == sch_idx:
@@ -76,9 +90,9 @@ def simulate_route(route: Route, schools: List[School], stations: Dict[int, Stat
             remaining_schools = [k for k, v in onboard_by_school.items() if v > 0]
             while remaining_schools:
                 # 尋找離目前位置最近的目標學校
-                nxt_sch_idx = min(remaining_schools, key=lambda k: travel_minutes(cur, schools[k].coord))
-                nxt_coord = schools[nxt_sch_idx].coord
-                travel = travel_minutes(cur, nxt_coord)
+                nxt_sch_idx = min(remaining_schools, key=lambda k: time_matrix[cur][schools[k].orig_idx])
+                nxt_coord = schools[nxt_sch_idx].orig_idx
+                travel = time_matrix[cur][nxt_coord]
                 
                 minutes += travel
                 total_onboard = sum(onboard_by_school.values())
@@ -107,7 +121,7 @@ def simulate_route(route: Route, schools: List[School], stations: Dict[int, Stat
         by_school[b['school']].append(b)
 
     for sch_idx, school_batches in by_school.items():
-        sch_coord = schools[sch_idx].coord
+        sch_orig_idx = schools[sch_idx].orig_idx
         # 比較該校所有學生的來源站點對 (i, j)
         for i in range(len(school_batches)):
             for j in range(len(school_batches)):
@@ -116,13 +130,18 @@ def simulate_route(route: Route, schools: List[School], stations: Dict[int, Stat
                 b_j = school_batches[j]
 
                 # 計算兩站點到該校的理論行駛距離（時間）
-                dist_i = travel_minutes(stations[b_i['station']].coord, sch_coord)
-                dist_j = travel_minutes(stations[b_j['station']].coord, sch_coord)
-                
+                dist_i = time_matrix[stations[b_i['station']].orig_idx][sch_orig_idx]
+                dist_j = time_matrix[stations[b_j['station']].orig_idx][sch_orig_idx]
+
                 if dist_i < dist_j and b_i['acc'] > b_j['acc']:
                     fairness_penalty += 1.0
-
-    return minutes, ivm, pickup_detail, fairness_penalty
+    return Route(
+        events=events,
+        minutes=minutes,
+        in_vehicle_minutes=ivm,
+        fairness_penalty=fairness_penalty, 
+        pickup_detail=pickup_detail
+    )
 
 def build_solution(routes: List[Route], stations: List[Station]) -> Solution:
     """自動化建立 Solution 物件並識別其可行性"""
@@ -153,46 +172,21 @@ def build_solution(routes: List[Route], stations: List[Station]) -> Solution:
         feasible=is_feasible
     )
 
-# ========= 成本函式 =========
-def solution_cost(sol: Solution) -> float:
-    if not sol.feasible: return float('inf')
-    return ROUTE_TIME_WEIGHT*sol.total_in_vehicle_minutes + BUS_COUNT_WEIGHT*len(sol.routes) + FAIRNESS_WEIGHT*sol.fairness_penalty + TOTAL_TIME_WEIGHT*sol.total_minutes
-
-def route_cost(route:Route) -> float:
-    return ROUTE_TIME_WEIGHT*route.in_vehicle_minutes + FAIRNESS_WEIGHT*route.fairness_penalty + TOTAL_TIME_WEIGHT*route.minutes + BUS_COUNT_WEIGHT
-
-def route_max_load(route: Route) -> int:
-    """計算路線任一時刻的最大車上人數。"""
-    onboard_by_school: Dict[int, int] = defaultdict(int)
-    max_load = 0
-    for et, data in route.events:
-        if et == 'pickup':
-            _, take_map = data  # type: ignore
-            for sch_idx, count in take_map.items():
-                onboard_by_school[int(sch_idx)] += count
-        else:
-            sch_idx = int(data)  # type: ignore
-            onboard_by_school[sch_idx] = 0
-        max_load = max(max_load, sum(onboard_by_school.values()))
-    return max_load
 
 # ========= 併車（串接事件序列；再次模擬核對 60 分鐘） =========
 def try_merge_routes(sol: Solution, stations_list: List[Station], schools: List[School], auto_fill:bool=False) -> Solution:
     stations = {s.idx:s for s in stations_list}
     routes = sol.routes[:]
-    changed=True
+    changed = False
     while changed:
-        changed=False
         n=len(routes)
         for i in range(n):
             for j in range(i+1, n):
                 r1, r2 = routes[i], routes[j]
                 events = r1.events + r2.events
-                r_tmp = Route(events=events)
-                minutes, ivm, detail, fairness = simulate_route(r_tmp, schools, stations, auto_fill=auto_fill)
+                r_tmp = build_route(events, schools, stations, auto_fill=auto_fill)
                 load = route_max_load(r_tmp)
-                if minutes <= MAX_ROUTE_MIN + 1e-6 and load <= BUS_CAPACITY:
-                    r_tmp.minutes, r_tmp.in_vehicle_minutes, r_tmp.pickup_detail, r_tmp.fairness_penalty = minutes, ivm, detail, fairness
+                if r_tmp.minutes <= MAX_ROUTE_MIN + 1e-6 and load <= BUS_CAPACITY:
                     keep = [k for k in range(n) if k not in (i,j)]
                     routes = [routes[k] for k in keep] + [r_tmp]
                     changed=True
@@ -200,19 +194,6 @@ def try_merge_routes(sol: Solution, stations_list: List[Station], schools: List[
             if changed: break
 
     return build_solution(routes, stations_list)
-
-# ========= 稽核 =========
-def audit_solution(sol: Solution, station_list: List[Station], schools: List[School]):
-    need = sum(sum(s.demands.values()) for s in station_list)
-    got = sum(c for r in sol.routes for _,_,c,_ in r.pickup_detail)
-    per_station_served = defaultdict(int)
-    for r in sol.routes:
-        for st,sch,c,_ in r.pickup_detail:
-            per_station_served[st]+=c
-    not_served = [s.idx for s in station_list if per_station_served[s.idx]==0 and sum(s.demands.values())>0]
-    print("=== 稽核 ===")
-    print(f"總需求 vs 總實載：{need} vs {got}")
-    print(f"疑似未服務站數：{len(not_served)} -> {not_served[:12]}{' ...' if len(not_served)>12 else ''}")
 
 # ========= 列印（圖二樣式；同站多校分行顯示） =========
 def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[School]):
@@ -227,10 +208,10 @@ def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[
     print(f"總路線時間(分)：{sol.total_minutes:.1f}")
     print(f"總乘車時間(人×分)：{sol.total_in_vehicle_minutes:.1f}")
     print(f"不公平費用得分：{sol.fairness_penalty:.1f}")
-    print(f"總分數: {TOTAL_TIME_WEIGHT*sol.total_minutes + BUS_COUNT_WEIGHT*len(sol.routes) + FAIRNESS_WEIGHT*sol.fairness_penalty + ROUTE_TIME_WEIGHT*sol.total_in_vehicle_minutes:.1f}")
+    print(f"總分數: {sol.solution_cost():.1f}")
     print("-" * 60)
 
-    # 動態欄寬
+    # 動態欄寬,根據站名長度調整；至少 6 字元寬以保持對齊
     station_w = max(6, max(len(s.name) for s in stations) if stations else 6)
 
     for b, r in enumerate(sol.routes, 1):
@@ -238,49 +219,35 @@ def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[
         print(f"Bus{b}: 共載 {total_load} 人，總行駛時間={r.minutes:.1f} 分鐘")
         print("-" * 60)
 
-        # 1) 依「撿站順序」輸出（從 events 取得順序最準）
-        pick_order: List[int] = []
-        for ev in r.events:
-            if ev[0] == 'pickup':
-                st_idx = ev[1][0]  # type: ignore
-                if st_idx not in pick_order:
-                    pick_order.append(st_idx)
-
-        # 2) 將同一站不同校的批次合併： {station_idx: [(school_idx, count_sum, ride_sum or avg?)]}
-        #   這裡依你範例，把每校各自的 (人數、乘車時間) 一組組列出；乘車時間使用實際該批次的 ride（同校多批次就逐筆列）。
-        grouped: Dict[int, List[Tuple[int,int,float]]] = defaultdict(list)
-        # 先把同站同校的多批「合併為一筆」：人數加總、乘車時間採加權平均（以人數為權重）
-        tmp: Dict[Tuple[int,int], Tuple[int,float]] = defaultdict(lambda: (0,0.0))
-        for st, k, c, ride in r.pickup_detail:
-            prev_c, prev_w = tmp[(st,k)]
-            new_c = prev_c + c
-            new_w = prev_w + ride * c
-            tmp[(st,k)] = (new_c, new_w)
-        for (st,k), (cc, ww) in tmp.items():
-            grouped[st].append((k, cc, ww/cc if cc>0 else 0.0))
-
-        # 3) 依撿站順序印出
+        # 1) 依事件順序輸出
         line_no = 1
-        for st in pick_order:
-            items = grouped.get(st, [])
-            if not items:
+        for ev in r.events:
+            if not isinstance(ev, Station):  # type: ignore
                 continue
-            # School_k,載 xx 人 (乘車 yy.y 分)；多校用頓號串接
-            right = "、".join([f"{sch_name.get(k, f'School_{k+1}')},載 {c:>2} 人 (乘車 {ride:>5.1f} 分)"
-                               for (k, c, ride) in items])
-            print(f"{line_no:02d}. {s_map[st].name:<{station_w}} → {right}")
+            take_map = ev.demands
+            right = "、".join([
+                f"{sch_name.get(k, f'School_{k+1}')},載 {c:>2} 人"
+                for k, c in take_map.items()
+            ])
+            print(f"{line_no:02d}. {s_map[ev.idx].name:<{station_w}} → {right}")
             line_no += 1
 
-        # 4) 路徑摘要： 站點序列 -> 學校序列
-        # 學校依實際到達時間（即在 pickup_detail 出現順序）排序，包含自動補足的學校
+        # 2) 路徑摘要： 站點序列 -> 學校序列
+        # 站點序列依事件順序，不去重；學校序列依實際 drop 事件順序
+        left = " -> ".join([
+            s_map[ev.idx].name
+            for ev in r.events
+            if isinstance(ev, Station)
+        ])
         seen = set()
         school_seq = []
-        for _, sch_idx, _, _ in r.pickup_detail:
+        for ev in r.events:
+            if not isinstance(ev, School):
+                continue
+            sch_idx = int(ev.idx)
             if sch_idx not in seen:
                 school_seq.append(sch_idx)
                 seen.add(sch_idx)
-
-        left = " -> ".join([s_map[st].name for st in pick_order])
         right = " -> ".join([sch_name.get(k, f"School_{k+1}") for k in school_seq])
         if left and right:
             print("")
@@ -294,3 +261,10 @@ def print_solution_pretty(sol: Solution, stations: List[Station], schools: List[
 
         print("-" * 60)
     print("")
+
+    
+
+if __name__=='__main__':
+    # 測試讀取 time matrix
+    time_matrix, time_map = load_time_matrix("~/SBRP_algorithmns/data/time-b_7.csv")
+    print(time_matrix)

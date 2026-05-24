@@ -3,7 +3,6 @@ from collections import defaultdict
 import itertools, math, random
 
 from utils.data_models import School, Station, Route, Solution, Event, Coord
-from utils.geo_utils import travel_minutes
 
 from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes
 
@@ -346,7 +345,7 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
 
 if __name__ == "__main__":
     # 為了能單獨執行，在此導入生成與後處理工具
-    from utils.instance_generator import gen_instance_multi, load_default_instance_from_csv
+    from utils.instance_processer import gen_instance_multi, load_default_instance_from_csv
     from utils.solution_utils import print_solution_pretty, audit_solution, plot_routes_on_map
 
     print("=== 啟動單純 ACO 演算法測試 ===")
