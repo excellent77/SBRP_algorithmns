@@ -36,7 +36,6 @@ class GASolver(object):
                 })
         self.num_groups = len(self.groups)
         self.num_delimiters = MAX_TOTAL_BUSES - 1
-        self.total_demand = sum(g['count'] for g in self.groups)
         # evaluation cache: key=tuple(chromosome) -> (feasible, Solution, cost)
         self._eval_cache = {}
 
@@ -270,7 +269,7 @@ class GASolver(object):
             ind = self._create_individual()
             if self.decode(ind).feasible:
                 population.append(ind)
-                tqdm.write(f"[GA] 已生成 {len(population)}/{POP_SIZE} 可行個體 (嘗試次數: {attempts})")
+                #tqdm.write(f"[GA] 已生成 {len(population)}/{POP_SIZE} 可行個體 (嘗試次數: {attempts})")
 
         if not population:
             raise RuntimeError(
@@ -322,7 +321,7 @@ def run_ga(schools: List[School], stations: List[Station], time_matrix: List[Lis
 if __name__ == "__main__":
     # 測試執行區塊
     random.seed(42)
-    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_15+5.csv", time_csv="./data/time-uniform_15+5.csv")
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 執行 GA 演算法

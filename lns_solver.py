@@ -210,7 +210,7 @@ def run_lns(schools: List[School], stations: List[Station], time_matrix:List[Lis
 if __name__ == "__main__":
     # ========= 修改後的執行區塊 =========
     random.seed(42)  # 固定隨機種子
-    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_15+5.csv", time_csv="./data/time-uniform_15+5.csv")
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
 
     # 呼叫 LNS 演算法

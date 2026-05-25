@@ -1,9 +1,7 @@
-import random
 import pandas as pd
 from typing import Dict, List, Tuple
 
 from utils.data_models import School, Station
-from utils.solution_utils import load_time_matrix
 
 
 
@@ -12,6 +10,16 @@ NUM_STATIONS = 30          # 站點數
 TOTAL_STUDENTS = 100       # 需求總人數
 
 
+
+def load_time_matrix(time_csv: str) -> Tuple[List[List[float]], Dict[int,int]]:
+    df_time = pd.read_csv(time_csv, index_col=0)
+    df_time.index = df_time.index.astype(int)
+    df_time.columns = df_time.columns.astype(int)
+    time_matrix = df_time.values.tolist()
+    for i in range(len(time_matrix)):
+        time_matrix[i][i] = 0.0
+    idx_map = {idx: i for i, idx in enumerate(df_time.index)}
+    return time_matrix, idx_map
 
 def load_instance_from_csv(
         stops_csv: str,
