@@ -6,16 +6,14 @@ from utils.data_models import School, Station, Route, Solution, Event, Coord
 
 from utils.solution_utils import simulate_route, solution_cost, build_solution, try_merge_routes
 
-# ========= 參數區 =========
 BUS_CAPACITY = 40
 MAX_ROUTE_MIN = 60.0
-MAX_TOTAL_BUSES = 10        # 總派車上限
-TOTAL_STUDENTS = 200       # 需求總人數
-SERVE_ALL = True           # True：必須載完所有學生
+MAX_TOTAL_BUSES = 10
+TOTAL_STUDENTS = 200
+SERVE_ALL = True
 
-# 防卡護欄
 DEBUG_LOG = False
-MAX_EVENTS_PER_ROUTE = 200     # 每條路線最多事件（pickup/drop）數
+MAX_EVENTS_PER_ROUTE = 200
 
 # ACO 參數（小規模給中等數值，跑得快）
 ANTS = 16
@@ -27,9 +25,22 @@ TAU_INIT = 0.1
 ELITE_RATE = 0.2
 Q = 1000.0
 
-# ========= ACO 構造（穩定版；允許先丟客再撿站） =========
 def aco_construct_solution(schools: List[School], station_list: List[Station],
                            tau: List[List[float]], eta: List[List[float]]) -> Solution:
+    """使用蟻群最佳化 (ACO) 啟發式演算法構建單個解（路徑集合）。
+
+    此函數模擬一隻螞蟻透過在站點接送學生或在學校放下學生之間做出機率性選擇
+    來構建路徑，同時考慮費洛蒙水平 (tau) 和啟發式訊息 (eta)。
+
+    Args:
+        schools: 學校物件列表。
+        station_list: 站點物件列表。
+        tau: 費洛蒙矩陣。
+        eta: 啟發式訊息矩陣（行駛時間的倒數）。
+
+    Returns:
+        代表螞蟻所構建路徑的 Solution 物件。
+    """
     stations = {s.idx: s for s in station_list}
     remaining: Dict[int, Dict[int,int]] = {s.idx: s.demands.copy() for s in station_list}
     total_students = sum(sum(d.values()) for d in remaining.values())
@@ -39,14 +50,29 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
     station_ids = [s.idx for s in station_list]
 
     def any_remaining() -> bool:
+        """檢查是否還有未服務的學生需求。"""
         return any(sum(m.values()) > 0 for m in remaining.values())
 
     def min_finish_time_from(pos: Coord, onboard_by_school: Dict[int, int]) -> float:
-        """回傳從 pos 出發，把車上所有學校送完的最短估計時間。"""
+        """估計從給定位置送完車上所有學生所需的最短時間。
+
+        Args:
+            pos: 巴士的當前座標。
+            onboard_by_school: 映射學校索引到該校車上學生人數的字典。
+
+        Returns:
+            送完所有學生的最短預估時間。
+        """
         return finish_order_from(pos, onboard_by_school)[0]
 
     def finish_order_from(pos: Coord, onboard_by_school: Dict[int, int]):
-        """回傳從 pos 出發送完車上學生的最短時間與學校順序。"""
+        """計算從給定位置送完所有車上學生的最短時間和最佳順序。
+
+        Returns:
+            包含以下內容的元組：
+                - 送完所有學生的最短時間。
+                - 代表送客最佳學校索引順序的元組。
+        """
         targets = [k for k, v in onboard_by_school.items() if v > 0]
         if not targets:
             return 0.0, ()
@@ -73,9 +99,8 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
         steps = 0
 
         while True:
-            steps += 1
-            if steps > MAX_EVENTS_PER_ROUTE:
-                if DEBUG_LOG: print("[route] reach MAX_EVENTS_PER_ROUTE, stop.")
+            if steps > MAX_EVENTS_PER_ROUTE: # type: ignore
+                if DEBUG_LOG: print("[route] reach MAX_EVENTS_PER_ROUTE, stop.") # type: ignore
                 break
 
             candidate_stations = [i for i in station_ids if sum(remaining[i].values()) > 0]
@@ -84,7 +109,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                 break
 
             made_progress = False
-
             # ---- 決定：丟客 or 撿站 ----
             choose_drop = False
             if load_total >= BUS_CAPACITY - 5 and candidate_schools:
@@ -92,7 +116,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
 
             if not choose_drop and candidate_stations:
                 if cur_coord is None:
-                    # If no current coordinate, assume starting from a school (index 0 for dummy school)
                     best_i = min(candidate_stations,
                                  key=lambda i: min(travel_minutes(s.coord, stations[i].coord) for s in schools))
                     to_next = min(travel_minutes(s.coord, stations[best_i].coord) for s in schools)
@@ -104,7 +127,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                 finish_min = min_finish_time_from(pos_after, load_by_school)
                 if minutes_used + to_next + finish_min > MAX_ROUTE_MIN:
                     choose_drop = True
-
             # ---- 先丟客 ----
             if choose_drop:
                 if not candidate_schools:
@@ -132,7 +154,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                 made_progress = True
                 stall = 0
                 continue
-
             # ---- 撿站 ----
             if not candidate_stations:
                 if candidate_schools and cur_coord is not None:
@@ -150,7 +171,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                 else:
                     stall = 0
                     continue
-
             probs, denom = [], 0.0
             for i in candidate_stations:
                 if cur_coord is None:
@@ -171,7 +191,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
 
             next_coord = stations[pick].coord
             travel = 0.0 if cur_coord is None else travel_minutes(cur_coord, next_coord)
-
             capacity_left = BUS_CAPACITY - load_total
             if capacity_left <= 0:
                 if candidate_schools and cur_coord is not None:
@@ -197,7 +216,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                     take_map[k] = c
                     capacity_left -= c
                 if capacity_left <= 0: break
-
             if not take_map:
                 candidate_stations.remove(pick)
                 stall += 1
@@ -208,7 +226,6 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
             projected_load_by_school = load_by_school.copy()
             for k, c in take_map.items():
                 projected_load_by_school[k] += c
-
             finish_min = min_finish_time_from(next_coord, projected_load_by_school)
             if minutes_used + travel + finish_min > MAX_ROUTE_MIN:
                 if candidate_schools and cur_coord is not None:
@@ -259,7 +276,7 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
                 last_pos = (stations[events[-1][1][0]].coord if events[-1][0]=='pickup'
                             else schools[int(events[-1][1])].coord)  # type: ignore
                 _, finish_order = finish_order_from(last_pos, remaining_onboard)
-                for sch_idx in finish_order:
+                for sch_idx in finish_order: # type: ignore
                     events.append(('drop', int(sch_idx)))
         else:
             break
@@ -269,8 +286,8 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
         routes.append(r)
 
         served_now = sum(t for _,_,t,_ in r.pickup_detail)
-        students_served += served_now
-        if DEBUG_LOG:
+        students_served += served_now # type: ignore
+        if DEBUG_LOG: # type: ignore
             print(f"[route] events={len(events)} minutes={r.minutes:.1f} served={served_now} fairness={r.fairness_penalty:.1f}")
 
         if not any_remaining():
@@ -278,8 +295,22 @@ def aco_construct_solution(schools: List[School], station_list: List[Station],
 
     return build_solution(routes, station_list)
 
-# ========= ACO 主程式 =========
 def run_aco(schools: List[School], stations: List[Station]) -> Solution:
+    """執行蟻群最佳化 (ACO) 演算法來解決 SBRP。
+
+    此函數初始化費洛蒙和啟發式矩陣，然後迭代地派遣螞蟻構建解，
+    並根據所找到解的品質更新費洛蒙路徑。
+
+    Args:
+        schools: 學校物件列表。
+        stations: 站點物件列表。
+
+    Returns:
+        代表 ACO 找到的最佳解之 Solution 物件。
+
+    Raises:
+        RuntimeError: 如果 ACO 未能找到任何解。
+    """
     center = (sum(s.coord[0] for s in schools)/len(schools),
               sum(s.coord[1] for s in schools)/len(schools))
     idx_to_coord: Dict[int,Coord] = {0:center} # Dummy node 0 for school/depot
@@ -302,10 +333,9 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
         sols=[]
         for _ in range(ANTS):
             s = aco_construct_solution(schools, stations, tau, eta)
-            s = try_merge_routes(s, stations, schools)
-            # 純粹的 ACO 不在每隻螞蟻構造後進行併車優化
-            # 若需要合併，通常放在整個演算法結束後的後處理階段
-            s = try_merge_routes(s, stations, schools) 
+            # It's common to apply local search or post-processing like route merging
+            # after an ant constructs a solution, or at the end of the algorithm.
+            s = try_merge_routes(s, stations, schools) # type: ignore
             
             sols.append(s)
             if (best is None) or solution_cost(s) < solution_cost(best):
@@ -313,12 +343,9 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
                 print(f"[Iter {it:02d}] New Best -> buses={len(best.routes)}, served={best.students_served}/{TOTAL_STUDENTS}, "
                       f"ivm={best.total_in_vehicle_minutes:.1f}, cost={solution_cost(best):.1f}")
 
-        # 蒸發
         for i in range(n):
             for j in range(n):
                 tau[i][j] *= (1.0 - RHO)
-
-        # 強化（菁英）
         feas = [z for z in sols if z.feasible]
         feas.sort(key=lambda x: solution_cost(x))
         elite_k = max(1, int(ELITE_RATE*len(feas))) if feas else 0
@@ -327,31 +354,31 @@ def run_aco(schools: List[School], stations: List[Station]) -> Solution:
             if not math.isfinite(cost) or cost<=0: continue
             delta = Q / cost
             for r in s.routes:
-                prev = 0 # Start from dummy school node
+                prev = 0 # type: ignore
                 for ev in r.events:
                     if ev[0]=='pickup':
                         st_idx = ev[1][0]  # type: ignore
                         tau[prev][st_idx] += delta
                         prev = st_idx
-                tau[prev][0] += delta # Return to dummy school node
+                tau[prev][0] += delta # type: ignore
 
         print(f"[Iter {it:02d}] best_cost={solution_cost(best):.1f}, buses={len(best.routes)}, "
               f"served={best.students_served}/{TOTAL_STUDENTS}, ivm={best.total_in_vehicle_minutes:.1f}")
 
     if best is None:
         raise RuntimeError("ACO failed to find any solution.")
-    return best
+    return best # type: ignore
 
 
 if __name__ == "__main__":
-    # 為了能單獨執行，在此導入生成與後處理工具
+    """
+    運行蟻群最佳化 (ACO) 求解器的入口點。
+    載入實例數據，運行 ACO，列印解，進行稽核並生成地圖。
+    """
     from utils.instance_processer import gen_instance_multi, load_default_instance_from_csv
     from utils.solution_utils import print_solution_pretty, audit_solution, plot_routes_on_map
-
-    print("=== 啟動單純 ACO 演算法測試 ===")
-    
-    # 1. 產生測試實例
-    random.seed(42)  # 固定隨機種子
+    print("=== Starting ACO Algorithm Test ===")
+    random.seed(42)
     csv_instance = load_default_instance_from_csv()
     if csv_instance is not None:
         schools, stations = csv_instance

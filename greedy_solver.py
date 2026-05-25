@@ -12,9 +12,15 @@ from utils.solution_utils import (
 from utils.instance_processer import load_instance_from_csv
 
 
-
 class GreedySOlver(object):
     def __init__(self, schools:List[Station], stations:List[Station], time_matrix:List[List[float]]):
+        """初始化貪婪求解器。
+
+        Args:
+            schools: 學校物件列表。
+            stations: 站點物件列表。
+            time_matrix: 所有原始索引之間的行駛時間二維列表。
+        """
         self.schools = schools
         self.stations = stations
         self.time_matrix = time_matrix
@@ -33,7 +39,17 @@ class GreedySOlver(object):
         self.st_dict = {s.idx: s for s in stations}
 
     def build_route_from_group(self, gids: List[int]) -> Route:
-        """根據群組 ID 序列構建 Route 物件，包含基本的 Drop 邏輯"""
+        """根據群組 ID 序列構建 Route 物件，包含基本的丟客邏輯。
+
+        此函數為指定的群組建立取貨事件，然後以貪婪方式（最近學校優先）
+        為所有目標學校加入丟客事件。
+
+        Args:
+            gids: 要包含在路徑中的群組 ID 列表。
+
+        Returns:
+            代表構建路徑的 Route 物件。
+        """
         if not gids: return None
         events = [Station(
             self.groups[gid]['st_idx'],
@@ -56,10 +72,18 @@ class GreedySOlver(object):
         return build_route(events, self.schools, self.st_dict, self.time_matrix)
 
     def run(self) -> Solution:
-        """使用隨機近鄰貪婪方式生成一個可行初始解"""
+        """執行貪婪演算法以構建解。
+
+        透過從隨機未服務群組開始，然後貪婪地加入最近的未服務群組來迭代構建路徑，
+        並確保路徑符合可行性（在容量和時間限制內）。此過程持續到所有群組都獲得服務
+        或達到最大巴士數量為止。
+
+        Returns:
+            代表貪婪演算法所找到之解的 Solution 物件。
+        """
         unserved = [g['id'] for g in self.groups]
         routes = []
-        
+
         while unserved and len(routes) < MAX_TOTAL_BUSES:
             curr_route_gids = []
             start_gid = random.choice(unserved)
@@ -69,12 +93,10 @@ class GreedySOlver(object):
             while unserved:
                 last_gid = curr_route_gids[-1]
                 last_st_idx = self.groups[last_gid]['st_idx']
-                
                 # 隨機選擇最近的 3 個候選站點之一，增加初始解多樣性
                 candidates = sorted(unserved, key=lambda gid: self.time_matrix[self.st_dict[last_st_idx].orig_idx][self.st_dict[self.groups[gid]['st_idx']].orig_idx])
                 k = min(3, len(candidates))
                 next_gid = random.choice(candidates[:k])
-                
                 # 測試加入該群組後是否仍符合約束 (載重與最大行駛時間)
                 test_gids = curr_route_gids + [next_gid]
                 test_route = self.build_route_from_group(test_gids)
@@ -85,17 +107,29 @@ class GreedySOlver(object):
                     unserved.remove(next_gid)
                 else:
                     break
-            
             routes.append(self.build_route_from_group(curr_route_gids))
-            
         return build_solution(routes, self.stations)
 
 def run_greedy(schools: List[School], stations: List[Station], time_matrix:List[List[float]]) -> Solution:
+    """運行校車路徑問題 (SBRP) 的貪婪求解器。
+
+    Args:
+        schools: 學校物件列表。
+        stations: 站點物件列表。
+        time_matrix: 所有原始索引之間的行駛時間二維列表。
+
+    Returns:
+        代表貪婪演算法所找到之解的 Solution 物件。
+    """
     greedy_solver = GreedySOlver(schools, stations, time_matrix)
     solution = greedy_solver.run()
     return solution
 
 if __name__ == "__main__":
+    """
+    運行貪婪求解器的入口點。
+    從 CSV 檔案載入實例數據，運行貪婪演算法，並列印解。
+    """
     random.seed(42)
     schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
     solution = run_greedy(schools, stations, time_matrix)

@@ -1,7 +1,7 @@
 import random
 import copy
 from tqdm import tqdm
-from typing import List
+from typing import List, Tuple
 from utils.data_models import School, Station, Route, Solution
 from utils.solution_utils import(
     MAX_ROUTE_MIN, BUS_CAPACITY, MAX_TOTAL_BUSES,
@@ -10,16 +10,22 @@ from utils.solution_utils import(
 from utils.instance_processer import load_instance_from_csv
 
 
-# ---------- GA 參數區 ----------
 MAX_ATTEMPTS = 5000
-POP_SIZE = 4000           # 種群大小
-GENERATIONS = 300       # 迭代代數
-CROSSOVER_RATE = 0.8    # 交配機率
-MUTATION_RATE = 0.6     # 突變機率
-ELITE_COUNT = 100         # 菁英保留數
+POP_SIZE = 4000
+GENERATIONS = 300
+CROSSOVER_RATE = 0.8
+MUTATION_RATE = 0.6
+ELITE_COUNT = 100
 
 class GASolver(object):
     def __init__(self, schools: List[School], stations: List[Station], time_matrix: List[List[float]]):
+        """初始化遺傳演算法求解器。
+
+        Args:
+            schools: 學校物件列表。
+            stations: 站點物件列表。
+            time_matrix: 所有原始索引之間的行駛時間二維列表。
+        """
         self.schools = schools
         self.stations = stations
         self.time_matrix = time_matrix
@@ -40,7 +46,17 @@ class GASolver(object):
         self._eval_cache = {}
 
     def _create_individual(self, max_nodes: int = 200000) -> List[int]:
-        """採用 DFS 生成染色體：所有 group 和 delimiter 的排列組合，空段視為未使用車輛。"""
+        """使用類 DFS 方法生成代表個體解的染色體。
+
+        染色體是群組索引和分隔符號 (-1) 的排列，分隔符號用於區分路徑。空段意味著未使用的巴士。
+        DFS 嘗試貪婪地構建有效路徑，以確保有更高機會獲得初始可行解。
+
+        Args:
+            max_nodes: 要訪問的 DFS 節點最大數量，以防止過度計算。
+
+        Returns:
+            代表染色體的整數列表。
+        """
         if self.num_groups == 0:
             return [-1] * self.num_delimiters
 
@@ -52,7 +68,6 @@ class GASolver(object):
             nonlocal solution, visited_nodes
             if solution is not None:
                 return True
-            visited_nodes += 1
             if visited_nodes > max_nodes:
                 return False
 
@@ -60,7 +75,6 @@ class GASolver(object):
                 solution = chromosome + [-1] * delimiters_left
                 return True
 
-            # 優先嘗試延續當前路徑，再嘗試分隔
             for g_idx in range(self.num_groups):
                 if used[g_idx]:
                     continue
@@ -72,11 +86,9 @@ class GASolver(object):
                 if dfs(chromosome + [g_idx], next_segment, delimiters_left, used_count + 1):
                     return True
                 used[g_idx] = False
-
             if delimiters_left > 0 and current_segment:
                 if dfs(chromosome + [-1], [], delimiters_left - 1, used_count):
                     return True
-
             return False
 
         # 先從最小群組數、最多路徑限制開始 DFS
@@ -87,14 +99,23 @@ class GASolver(object):
             if dfs([first], [first], self.num_delimiters, 1):
                 return solution
             used[first] = False
-
         # 如果 DFS 無法在節點限制內找到，可降級為隨機排列避免程式停滯
         chromosome = list(range(self.num_groups)) + [-1] * self.num_delimiters
         random.shuffle(chromosome)
         return chromosome
 
     def _build_route_from_groups(self, group_indices: List[int]) -> Route:
-        """根據群組序列建立 Route 並加入 Greedy Drop 邏輯"""
+        """根據群組索引序列構建 Route 物件，並結合貪婪丟客邏輯。
+
+        此函數合併同一站點的取貨，然後以貪婪方式（最近學校優先）
+        加入學校的丟客事件。
+
+        Args:
+            group_indices: 代表取貨序列的群組索引列表。
+
+        Returns:
+            如果可行則回傳 Route 物件，否則回傳 None（如果超過容量或時間限制）。
+        """
         if not group_indices: return None
         
         events = []
@@ -129,7 +150,6 @@ class GASolver(object):
             events.append(self.schools[nxt])
             last_pos = self.schools[nxt].orig_idx
             rem_schools.remove(nxt)
-            
         r = build_route(events, self.schools, self.st_dict, self.time_matrix)
         
         # 確保合理性: 不大於最大公車容量，不大於行駛時間
@@ -138,6 +158,17 @@ class GASolver(object):
         return r
 
     def decode(self, chromosome: List[int]) -> Solution:
+        """將染色體解碼為 Solution 物件。
+
+        染色體被分隔符號 (-1) 分成片段，每個片段都嘗試構建為一條路徑。
+
+        Args:
+            chromosome: 代表染色體的整數列表。
+
+        Returns:
+            Solution 物件。如果染色體導致不可行的解（例如：有未服務群組或無效路徑），
+            則回傳一個空/不可行的解。
+        """
         segments = []
         curr = []
         for val in chromosome:
@@ -162,7 +193,17 @@ class GASolver(object):
         return build_solution(routes, self.stations)
 
     def _evaluate(self, chromosome: List[int]):
-        """Evaluate chromosome with caching. Returns (feasible, Solution, cost)."""
+        """評估染色體，回傳其可行性、解碼後的 Solution 及其成本。
+
+        此方法使用快取來存儲先前看過的染色體的評估結果，
+        以避免冗餘計算。
+
+        Args:
+            chromosome: 代表染色體的整數列表。
+
+        Returns:
+            元組 (feasible: bool, solution: Solution, cost: float)。
+        """
         key = tuple(chromosome)
         if key in self._eval_cache:
             return self._eval_cache[key]
@@ -172,7 +213,19 @@ class GASolver(object):
         return self._eval_cache[key]
 
     def crossover_segment(self, p1: List[int], p2: List[int]) -> List[int]:
-        """組合父母的完整巴士路徑片段，並嘗試貪婪合併其餘群組，且確保符合限制式"""
+        """透過結合兩個父代染色體的路徑片段來執行交配操作。
+
+        它從每個父代中隨機選擇一個片段，將其結合，然後將剩餘未分配的群組
+        貪婪地打包到新片段或現有片段中，確保路徑的可行性
+        （容量和時間限制）。
+
+        Args:
+            p1: 第一個父代染色體。
+            p2: 第二個父代染色體。
+
+        Returns:
+            交配產生的新染色體。
+        """
         def get_segs(chrom):
             segs, curr = [], []
             for v in chrom:
@@ -186,12 +239,10 @@ class GASolver(object):
         segs1, segs2 = get_segs(p1), get_segs(p2)
         s1 = random.choice(segs1) if segs1 else []
         s2 = random.choice(segs2) if segs2 else []
-        
         # 組合選中的片段作為新染色體的開頭
         combined_groups, seen = [], set()
         for g in s1 + s2:
             if g not in seen: combined_groups.append(g); seen.add(g)
-            
         remaining_groups = [g for g in range(self.num_groups) if g not in seen]
         random.shuffle(remaining_groups) # 保持一定的隨機多樣性
         
@@ -200,9 +251,7 @@ class GASolver(object):
 
         # Process remaining groups with greedy packing
         for g_idx in remaining_groups:
-            # Try to add the group to the current segment
             test_segment = current_segment_groups + [g_idx]
-
             # Check if the test_segment forms a valid route
             temp_route = self._build_route_from_groups(test_segment)
 
@@ -227,7 +276,6 @@ class GASolver(object):
             if i < len(new_chrom_segments) - 1 and delimiters_to_add > 0:
                 new_chrom.append(-1)
                 delimiters_to_add -= 1
-        
         # Add any remaining delimiters to the end
         while delimiters_to_add > 0:
             new_chrom.append(-1)
@@ -236,6 +284,16 @@ class GASolver(object):
         return new_chrom
 
     def mutate(self, chromosome: List[int]):
+        """對染色體應用突變操作。
+
+        突變操作包括：
+        1. 透過將分隔符號移動到末尾來合併路徑。
+        2. 交換兩個相鄰元素（群組或分隔符號）。
+        3. 將群組移動到染色體內的新隨機位置。
+
+        Args:
+            chromosome: 要被突變的染色體（原處修改）。
+        """
         if random.random() >= MUTATION_RATE: return
         
         orig = list(chromosome)
@@ -247,12 +305,10 @@ class GASolver(object):
                 idx = random.choice(delim_indices)
                 val = chromosome.pop(idx)
                 chromosome.append(val)
-
         # 2. 隨機交換相鄰兩個位置 (群或分割標記)
         if len(chromosome) >= 2:
             idx = random.randint(0, len(chromosome) - 2)
             chromosome[idx], chromosome[idx + 1] = chromosome[idx + 1], chromosome[idx]
-        
         # 3. 隨機抽取站點移動到新位置 (嘗試插到其他路徑中以填補剩餘空間)
         group_positions = [idx for idx, v in enumerate(chromosome) if v != -1]
         if group_positions:
@@ -261,16 +317,26 @@ class GASolver(object):
             chromosome.insert(random.randint(0, len(chromosome)), val)
 
     def run(self) -> Solution:
+        """執行遺傳演算法的主迴圈。
+
+        初始化種群，然後迭代地應用選擇、交配和突變來使種群跨代進化。
+        它會追蹤並回傳找到的最佳可行解。
+
+        Returns:
+            GA 找到的最佳可行 Solution 物件。
+
+        Raises:
+            RuntimeError: 如果無法生成可行個體，或者在進化過程中
+                          種群完全變得不可行。
+        """
         # 初始化：確保起始種群皆為可行解
         population = []
         for attempts in tqdm(range(MAX_ATTEMPTS), desc="Generating initial population"):
             if len(population) >= POP_SIZE:
                 break
             ind = self._create_individual()
-            if self.decode(ind).feasible:
-                population.append(ind)
-                #tqdm.write(f"[GA] 已生成 {len(population)}/{POP_SIZE} 可行個體 (嘗試次數: {attempts})")
-
+            if self.decode(ind).feasible: # type: ignore
+                population.append(ind) # type: ignore
         if not population:
             raise RuntimeError(
                 f"[GA] 無法在 {MAX_ATTEMPTS} 次嘗試內生成任何可行個體，請檢查約束條件或調整初始化方法。"            )
@@ -284,7 +350,7 @@ class GASolver(object):
                 if feasible:
                     scored_pop.append((ind, sol, cost))
 
-            if not scored_pop:
+            if not scored_pop: # type: ignore
                 raise RuntimeError("[GA] 當前種群內沒有任何可行個體，演算法無法繼續。")
 
             scored_pop.sort(key=lambda x: x[2])
@@ -293,7 +359,7 @@ class GASolver(object):
                 best_sol = copy.deepcopy(curr_best_sol)
                 tqdm.write(f"[Gen {gen:03d}] 發現更優解 -> 成本: {best_sol.solution_cost():.1f} 車輛數:{len(best_sol.routes)}")
 
-            new_pop = [item[0] for item in scored_pop[:ELITE_COUNT]]
+            new_pop = [item[0] for item in scored_pop[:ELITE_COUNT]] # type: ignore
             while len(new_pop) < POP_SIZE:
                 p1, p2 = self._tournament(scored_pop), self._tournament(scored_pop)
                 c1 = self.crossover_segment(p1, p2) if random.random() < CROSSOVER_RATE else list(p1)
@@ -306,26 +372,44 @@ class GASolver(object):
             population = new_pop[:POP_SIZE]
         return best_sol
 
-    def _tournament(self, scored_pop, k=3):
-        # 確保樣本數不超過當前可用種群數量
+    def _tournament(self, scored_pop: List[Tuple[List[int], Solution, float]], k: int = 3) -> List[int]:
+        """執行競爭式選擇 (Tournament Selection) 來挑選父代染色體。
+
+        從評分後的種群中隨機選擇 `k` 個個體，並回傳其中成本最低（最佳）者的染色體。
+
+        Args:
+            scored_pop: 代表已評估種群的元組 (chromosome, Solution, cost) 列表。
+            k: 參加競賽的個體數量。
+
+        Returns:
+            競賽獲勝者的染色體。
+        """
         sample_size = min(k, len(scored_pop))
         selected = random.sample(scored_pop, sample_size)
-        # scored_pop entries are (chromosome, Solution, cost)
         selected.sort(key=lambda x: x[2])
         return selected[0][0]
 
 def run_ga(schools: List[School], stations: List[Station], time_matrix: List[List[float]]) -> Solution:
+    """運行校車路徑問題的遺傳演算法求解器。
+
+    Args:
+        schools: 學校物件列表。
+        stations: 站點物件列表。
+        time_matrix: 所有原始索引之間的行駛時間二維列表。
+
+    Returns:
+        代表 GA 找到的最佳解之 Solution 物件。
+    """
     solver = GASolver(schools, stations, time_matrix)
     return solver.run()
 
 if __name__ == "__main__":
-    # 測試執行區塊
+    """
+    運行遺傳演算法求解器的入口點。
+    從 CSV 檔案載入實例數據，運行 GA 並列印解。
+    """
     random.seed(42)
     schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_15+5.csv", time_csv="./data/time-uniform_15+5.csv")
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
-
-    # 執行 GA 演算法
     best_ga_solution = run_ga(schools, stations, time_matrix)
-
-    # 輸出結果
     print_solution_pretty(best_ga_solution, stations, schools)
