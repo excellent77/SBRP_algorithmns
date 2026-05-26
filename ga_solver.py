@@ -12,7 +12,7 @@ from utils.instance_processer import load_instance_from_csv
 
 MAX_ATTEMPTS = 5000
 POP_SIZE = 4000
-GENERATIONS = 300
+GENERATIONS = 200
 CROSSOVER_RATE = 0.8
 MUTATION_RATE = 0.6
 ELITE_COUNT = 100
@@ -409,7 +409,7 @@ if __name__ == "__main__":
     從 CSV 檔案載入實例數據，運行 GA 並列印解。
     """
     random.seed(42)
-    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_15+5.csv", time_csv="./data/time-uniform_15+5.csv")
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_25+10.csv", time_csv="./data/time-uniform_25+10.csv")
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
     best_ga_solution = run_ga(schools, stations, time_matrix)
     print_solution_pretty(best_ga_solution, stations, schools)

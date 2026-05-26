@@ -2,9 +2,9 @@ from typing import Dict, List, Tuple, Union
 
 
 
-ROUTE_TIME_WEIGHT = 1.0
-TOTAL_TIME_WEIGHT = 10.0
-BUS_COUNT_WEIGHT = 1000.0 # 顯著提高權重以優先減少派車數
+INVEHICLE_TIME_WEIGHT = 1
+TOTAL_TIME_WEIGHT = 30.0
+BUS_COUNT_WEIGHT = 3000.0 # 顯著提高權重以優先減少派車數
 FAIRNESS_WEIGHT = 100.0      # 先後順序謬誤費權重
 
 
@@ -42,7 +42,7 @@ class Route(object):
      
     def route_cost(self) -> float:
         return (
-            ROUTE_TIME_WEIGHT*self.in_vehicle_minutes
+            INVEHICLE_TIME_WEIGHT*self.in_vehicle_minutes
             + FAIRNESS_WEIGHT*self.fairness_penalty
             + TOTAL_TIME_WEIGHT*self.minutes
             + BUS_COUNT_WEIGHT
@@ -70,7 +70,7 @@ class Solution(object):
     def solution_cost(self) -> float:
         if not self.feasible: return float('inf')
         return (
-            ROUTE_TIME_WEIGHT*self.total_in_vehicle_minutes
+            INVEHICLE_TIME_WEIGHT*self.total_in_vehicle_minutes
             + FAIRNESS_WEIGHT*self.fairness_penalty
             + TOTAL_TIME_WEIGHT*self.total_minutes
             + BUS_COUNT_WEIGHT*len(self.routes)

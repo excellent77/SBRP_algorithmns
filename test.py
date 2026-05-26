@@ -228,6 +228,6 @@ if __name__ == '__main__':
     運行精確求解器的入口點。
     從 CSV 檔案載入實例數據，解決問題並列印解。
     """
-    schools, stations, time_matrix = load_instance_from_csv(stops_csv='./data/stops-b_7.csv', time_csv='./data/time-b_7.csv')
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv='./data/stops-b_8.csv', time_csv='./data/time-b_8.csv')
     solution = solve_exact_with_gurobi(schools, stations, time_matrix)
     print_solution_pretty(solution, stations, schools)

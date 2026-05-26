@@ -1,4 +1,3 @@
-import os
 import random
 from tqdm import tqdm
 from typing import List, Tuple
@@ -6,7 +5,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from utils.data_models import (
-    BUS_COUNT_WEIGHT, TOTAL_TIME_WEIGHT, ROUTE_TIME_WEIGHT, FAIRNESS_WEIGHT,
+    BUS_COUNT_WEIGHT, TOTAL_TIME_WEIGHT, INVEHICLE_TIME_WEIGHT, FAIRNESS_WEIGHT,
     School, Station, Route, Solution
 )
 from utils.solution_utils import (
@@ -18,8 +17,8 @@ from greedy_solver import run_greedy
 
 
 DW_ITERATIONS = 2000
-MAX_PICKUP_BRANCHES = float("inf")
-MAX_ROUTE_EVENTS = float("inf")
+MAX_PICKUP_BRANCHES = 10
+MAX_ROUTE_EVENTS = 15
 
 class DantzigWolfeSolver(object):
     def __init__(self, schools: List[School], stations: List[Station], time_matrix: List[List[float]]):
@@ -87,14 +86,14 @@ class DantzigWolfeSolver(object):
         Returns:
             代表路徑唯一鍵值的字串。
         """
-        key = ""
+        key_parts = []
         for event in r.events:
             if isinstance(event, Station):
-                sch_idx = list(event.demands.keys())[0]
-                key += str(self.group_map[(event.idx, sch_idx)])
+                for sch_idx in sorted(event.demands.keys()):
+                    key_parts.append(f"G{self.group_map[(event.idx, sch_idx)]}")
             elif isinstance(event, School):
-                key += str(-(event.idx + 1))
-        return key
+                key_parts.append(f"S{event.idx}")
+        return "_".join(key_parts)
 
     def _add_route(self, r: Route) -> bool:
         """嘗試將路徑加入路徑池。
@@ -118,8 +117,9 @@ class DantzigWolfeSolver(object):
 
         for event in r.events:
             if isinstance(event, Station):
-                sch_idx = list(event.demands.keys())[0]
-                self.group_to_routes[self.group_map[(event.idx, sch_idx)]].append(route_idx)
+                for sch_idx in event.demands.keys():
+                    gid = self.group_map[(event.idx, sch_idx)]
+                    self.group_to_routes[gid].append(route_idx)
         return True
 
     def path_to_route(self, path: List[int]) -> Route:
@@ -202,6 +202,8 @@ class DantzigWolfeSolver(object):
 
         best_route = None
         best_rc = 0.0
+        group_ids = [i for i in range(len(self.groups))]
+        random.shuffle(group_ids)
 
         def pickup_fairness_increment(new_gid: int, path: list[int]) -> float:
             new_sch = self.group_school_idx[new_gid]
@@ -238,6 +240,7 @@ class DantzigWolfeSolver(object):
                 return
             if load > BUS_CAPACITY:
                 return
+            
             if path[-1] >= 0:
                 curr_node = self.groups[path[-1]].orig_idx
             else:
@@ -283,10 +286,10 @@ class DantzigWolfeSolver(object):
                     new_onboard,
                 )
             pickup_branches = 0
-            for gid in range(len(self.groups)):
+            for gid in group_ids:
                 if visited_mask & (1 << gid):
                     continue
-                if path[-1] >=0 and self.group_direct_school_dist[path[-1]] < self.group_direct_school_dist[gid]:
+                if path[-1] >=0 and self.group_direct_school_dist[path[-1]] > self.group_direct_school_dist[gid]:
                     continue
                 if load + self.group_count[gid] > BUS_CAPACITY:
                     continue
@@ -322,7 +325,7 @@ class DantzigWolfeSolver(object):
                 current_rc = (
                     BUS_COUNT_WEIGHT
                     + TOTAL_TIME_WEIGHT * time
-                    + ROUTE_TIME_WEIGHT * ivm_acc
+                    + INVEHICLE_TIME_WEIGHT * ivm_acc
                     + FAIRNESS_WEIGHT * fairness_acc
                     - dual_acc
                     - self.mu
@@ -334,7 +337,7 @@ class DantzigWolfeSolver(object):
                         best_rc = current_rc
                         best_route = temp_route
 
-        for gid in range(len(self.groups)):
+        for gid in group_ids:
             # Start DFS for each group as a potential first pickup
             dfs(
                 [gid],
@@ -412,6 +415,6 @@ if __name__ == "__main__":
     從 CSV 檔案載入實例數據，運行求解器並列印解。
     """
     random.seed(42)
-    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-b_7.csv", time_csv="./data/time-b_7.csv")
+    schools, stations, time_matrix = load_instance_from_csv(stops_csv="./data/stops-uniform_15+5.csv", time_csv="./data/time-uniform_15+5.csv")
     best_sol = run_dantzig_wolfe(schools, stations, time_matrix)
     print_solution_pretty(best_sol, stations, schools)
