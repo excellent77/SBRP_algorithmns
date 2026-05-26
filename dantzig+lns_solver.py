@@ -19,7 +19,7 @@ LNS_PRICING_ITERATIONS = 2000
 DESTROY_ROUTES_PROB    = 0.5   # 50% 機率做整條路線破壞
 DESTROY_DEGREE         = 0.8   # random destroy 時移除比例
 
-DW_ITERATIONS   = 20
+DW_ITERATIONS   = 200
 
 
 

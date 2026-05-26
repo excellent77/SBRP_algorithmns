@@ -15,11 +15,10 @@ PENALTY_WEIGHT = 100000
 DESTROY_DEGREE = 0.5
 SHOW_MAP = True
 
-# ── Simulated Annealing 參數 ──────────────────────────────────────────────────
-SA_INITIAL_TEMP  = 5.0   # 初始溫度：控制初期接受劣解的機率，視 solution_cost() 的數量級調整
-SA_COOLING_RATE  = 0.995 # 冷卻速率：每次迭代乘以此值，0.995 在 500 次後約降至初始的 8%
-SA_MIN_TEMP      = 0.01  # 最低溫度：低於此值後視同 Hill Climbing，不再接受劣解
-# ─────────────────────────────────────────────────────────────────────────────
+SA_INITIAL_TEMP  = 5.0   # 初始溫度：控制初期接受劣解的機率
+SA_COOLING_RATE  = 0.995 # 冷卻速率：每次迭代乘以此值，0.995
+SA_MIN_TEMP      = 0.01  # 最低溫度：低於此值後不再接受劣解
+
 
 
 def rebuild_solution(routes, stations_list, schools, time_matrix):
@@ -213,8 +212,8 @@ def run_lns(
 if __name__ == "__main__":
     random.seed(42)
     schools, stations, time_matrix = load_instance_from_csv(
-        stops_csv="./data/stops-uniform_15+5.csv",
-        time_csv="./data/time-uniform_15+5.csv"
+        stops_csv="./data/stops-uniform_25+10.csv",
+        time_csv="./data/time-uniform_25+10.csv"
     )
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
     best_lns_solution = run_lns(schools, stations, time_matrix)
