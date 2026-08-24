@@ -212,8 +212,8 @@ def run_lns(
 if __name__ == "__main__":
     random.seed(42)
     schools, stations, time_matrix = load_instance_from_csv(
-        stops_csv="./data/stops-uniform_25+10.csv",
-        time_csv="./data/time-uniform_25+10.csv"
+        stops_csv="./data/stops-b_7.csv",
+        time_csv="./data/time-b_7.csv"
     )
     print(f"[DATA] 學校數={len(schools)}, 站點數={len(stations)}")
     best_lns_solution = run_lns(schools, stations, time_matrix)

@@ -19,7 +19,7 @@ LNS_PRICING_ITERATIONS = 2000
 DESTROY_ROUTES_PROB    = 0.5   # 50% 機率做整條路線破壞
 DESTROY_DEGREE         = 0.8   # random destroy 時移除比例
 
-DW_ITERATIONS   = 200
+DW_ITERATIONS = 200
 
 
 
@@ -424,8 +424,8 @@ def run_dantzig_wolfe(
 if __name__ == "__main__":
     random.seed(42)
     schools, stations, time_matrix = load_instance_from_csv(
-        stops_csv="./data/stops-uniform_25+10.csv",
-        time_csv="./data/time-uniform_25+10.csv"
+        stops_csv="./data/stops-b_7.csv",
+        time_csv="./data/time-b_7.csv"
     )
     best_sol = run_dantzig_wolfe(schools, stations, time_matrix)
     print_solution_pretty(best_sol, stations, schools)

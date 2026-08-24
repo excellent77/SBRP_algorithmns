@@ -1,76 +1,114 @@
-# 校車路徑問題 (SBRP) 求解器
+# School Bus Routing: Exact Optimization vs. Scalable Heuristics
 
-本儲存庫提供了多種演算法來解決校車路徑問題 (SBRP)。目標是為校車找到最佳或接近最佳的路徑，以便從指定站點接送學生並將其送到各自的學校，在遵守約束條件（如巴士容量、最大行駛時間）的同時，最小化成本（如巴士數量、總行駛時間）。
+An optimization research project for the **School Bus Routing Problem (SBRP)**. The project studies how to build feasible bus routes while balancing operational efficiency with a less visible objective: fairness in students' in-vehicle time.
 
-## 已實現的演算法
+Rather than treating SBRP as a single-solver exercise, I implemented an experimental framework that compares exact optimization, decomposition, and metaheuristics as the problem grows from **N = 30 to 50 and 80 stops**.
 
-1.  **精確求解器 (`test.py`)**: 測試用可忽略
-2.  **遺傳演算法 (GA) 求解器 (`ga_solver.py`)**: 一種啟發式方法，使用交配和突變等遺傳算子使解的種群跨代進化。
-3.  **貪婪求解器 (`greedy_solver.py`)**: 一種簡單的啟發式方法，透過做出局部最佳選擇來增量構建路徑。常用於為其他演算法生成初始解。
-4.  **大鄰域搜索 (LNS) 求解器 (`lns_solver.py`)**: 一種迭代啟發式方法，重複破壞當前解的一部分並使用啟發式方法修復它，旨在跳出局部最佳解。
-5.  **Dantzig-Wolfe 分解求解器 (`dantzig-wolfe_solver.py`)**: 一種精確方法，使用列生成 (Column Generation) 解決大規模線性規劃，將問題分解為主問題和定價問題。
+![SBRP solver results across N=30, 50, and 80](docs/results.png)
 
-## 安裝方式
+## Problem
 
-1.  **複製儲存庫：**
-    ```bash
-    git clone https://github.com/your-username/SBRP_algorithmns.git
-    cd SBRP_algorithmns
-    ```
+Given student demand at multiple pickup stops and destination schools, construct routes that:
 
-2.  **安裝 Python 依賴項：**
-    ```bash
-    pip install -r requirements.txt
-    ```
+- serve every student and deliver them to the correct school;
+- respect bus-capacity and maximum-route-duration constraints;
+- minimize fleet size, total travel time, and student in-vehicle time; and
+- avoid systematically giving students from the same school disproportionately long rides.
 
-3.  **Gurobi 安裝（精確與 Dantzig-Wolfe 求解器所需）：**
-    `gurobipy` 是 Gurobi Optimizer 的接口，這是一款商業軟體。您需要：
-    *   從 Gurobi 官網下載並安裝 Gurobi Optimizer。
-    *   獲取有效的 Gurobi 授權（學術授權通常是免費的）。
-    *   按照 Gurobi 的說明設定環境變數和授權。
+The weighted objective used throughout the project is:
 
-## 數據格式
+$$
+\min\; w_b \cdot \text{buses}
++ w_t \cdot \text{travel time}
++ w_r \cdot \text{in-vehicle time}
++ w_f \cdot \text{fairness penalty}
+$$
 
-求解器需要兩個 CSV 檔案作為輸入：
+This formulation makes the central research question explicit: **how much efficiency should be traded for a fairer distribution of student travel burden?**
 
-*   `stops-*.csv`: 定義學生取貨站點及其需求。
-    *   欄位：`idx`（站點 ID）、`name`（站點名稱）、`orig_idx`（用於行駛時間矩陣查找的原始索引）、`school_idx`（目標學校 ID）、`count`（該校學生人數）。
-*   `time-*.csv`: 一個方陣，代表所有相關原始索引（站點和學校）之間的行駛時間。
-    *   `(i, j)` 條目代表從原始索引 `i` 到原始索引 `j` 的行駛時間。
+## My Contribution
 
-需自行建立`./data/` 目錄並放入數據檔案。
+- Built a shared route simulation and feasibility layer so every solver is evaluated under the same capacity, duration, demand, and fairness rules.
+- Implemented an **exact Gurobi solver** as a small-instance benchmark.
+- Implemented **Dantzig–Wolfe decomposition with column generation**, including reduced-cost pricing and fairness-aware route generation.
+- Developed scalable **Greedy, Genetic Algorithm, Ant Colony Optimization, and Large Neighborhood Search** solvers.
+- Combined column generation with an **LNS pricing heuristic** to explore the middle ground between exact optimization and practical scalability.
+- Designed experiments at **N = 30, 50, and 80** to compare solution quality and computational tractability as instance size increases.
 
-## 如何執行求解器
+## Results & Engineering Takeaways
 
-每個求解器都可以直接從其 Python 檔案執行。您可以修改各檔案內的 `if __name__ == "__main__":` 區塊來更改輸入數據或參數。
+The experiments expose the expected but important optimization trade-off:
 
-**用法範例：**
+- **Exact optimization** provides a quality reference for smaller instances, but exhaustive feasible-route generation becomes the scalability bottleneck.
+- **Metaheuristics** give up optimality guarantees in exchange for the ability to search larger instances within a practical runtime.
+- **Column generation** avoids enumerating every route upfront, while heuristic pricing further improves scalability when exact pricing is too expensive.
+- **Fairness is not free**: changing its weight can alter route composition and travel time, so it must be evaluated alongside cost—not added only after routing.
 
-*   **精確求解器：**
-    ```bash
-    python test.py
-    ```
-*   **遺傳演算法求解器：**
-    ```bash
-    python ga_solver.py
-    ```
-*   **貪婪求解器：**
-    ```bash
-    python greedy_solver.py
-    ```
-*   **大鄰域搜索求解器：**
-    ```bash
-    python lns_solver.py
-    ```
-*   **蟻群最佳化求解器：**
-    ```bash
-    python aco_solver.py
-    ```
-*   **Dantzig-Wolfe 求解器：**
-    ```bash
-    python dantzig-wolfe_solver.py
-    ```
+The figure above summarizes the N=30/50/80 experiments. It is intended as an empirical comparison of solver behavior, not a claim that every heuristic reaches the global optimum.
 
-## 輸出結果
+## What I Learned
 
-所有求解器都將在終端機中印出格式解摘要，包括總成本、巴士數量、總車內時間以及每條路徑的詳情
+- A mathematically stronger formulation is not automatically the best engineering solution; the useful method depends on instance size and runtime budget.
+- Exact solvers are valuable beyond deployment: they provide baselines for measuring heuristic quality on tractable cases.
+- Separating route construction, feasibility checks, and objective evaluation makes very different algorithms directly comparable.
+- Multi-objective routing requires reporting the components of cost. A single objective value can hide whether an improvement came from fewer buses, shorter routes, or reduced unfairness.
+
+## Implemented Methods
+
+| Method | Role in the project | Entry point |
+|---|---|---|
+| Exact optimization (Gurobi) | Small-instance benchmark | `exact_solver.py` |
+| Dantzig–Wolfe / column generation | Decomposition-based optimization | `dantzig-wolfe_solver.py` |
+| Column generation + LNS pricing | Scalable route-column discovery | `dantzig+lns_solver.py` |
+| Large Neighborhood Search | Destroy-and-repair local search | `lns_solver.py` |
+| Genetic Algorithm | Population-based search | `ga_solver.py` |
+| Ant Colony Optimization | Pheromone-guided constructive search | `aco_solver.py` |
+| Greedy construction | Fast baseline and initial solution | `greedy_solver.py` |
+
+## Quick Start
+
+```bash
+git clone https://github.com/excellent77/SBRP_algorithmns.git
+cd SBRP_algorithmns
+pip install -r requirements.txt
+```
+
+Gurobi-based methods require a working Gurobi installation and license. A free academic license is available for eligible users.
+
+Place the input files in `./data/`, then run a solver directly:
+
+```bash
+python greedy_solver.py
+python lns_solver.py
+python ga_solver.py
+python aco_solver.py
+python exact_solver.py
+python dantzig-wolfe_solver.py
+python dantzig+lns_solver.py
+```
+
+The example instance paths and algorithm parameters are defined in each script's `if __name__ == "__main__":` block.
+
+## Data Format
+
+Each instance consists of two CSV files:
+
+- `stops-*.csv`: pickup-stop ID, original matrix index, destination school, and student demand.
+- `time-*.csv`: square origin-to-origin travel-time matrix covering stops and schools.
+
+Each solver prints a solution summary including objective cost, bus count, total route time, total in-vehicle time, feasibility, and route details.
+
+## Project Structure
+
+```text
+.
+├── exact_solver.py                 # exact Gurobi benchmark
+├── dantzig-wolfe_solver.py         # column generation
+├── dantzig+lns_solver.py           # column generation with LNS pricing
+├── greedy_solver.py                # constructive baseline
+├── ga_solver.py                    # genetic algorithm
+├── aco_solver.py                   # ant colony optimization
+├── lns_solver.py                   # large neighborhood search
+├── utils/                          # data models, simulation, and I/O
+└── docs/                           # algorithm notes and experiment results
+```
