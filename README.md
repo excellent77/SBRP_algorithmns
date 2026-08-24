@@ -68,8 +68,8 @@ The figure above summarizes the N=30/50/80 experiments. It is intended as an emp
 ## Quick Start
 
 ```bash
-git clone https://github.com/excellent77/SBRP_algorithmns.git
-cd SBRP_algorithmns
+git clone https://github.com/excellent77/SBRP_algorithms.git
+cd SBRP_algorithms
 pip install -r requirements.txt
 ```
 
